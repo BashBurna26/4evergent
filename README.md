@@ -19,6 +19,7 @@ An open-source framework for deploying AI agents that hold permissioned Stellar 
 7. [Testnet setup](#testnet-setup)
 8. [Adding a new agent capability](#adding-a-new-agent-capability)
 9. [Roadmap](#roadmap)
+10. [HTTP API reference and OpenAPI document](docs/api.md#openapi-document)
 
 ---
 

@@ -118,6 +118,22 @@ bodies (noted where they differ). Unknown paths return
 
 ---
 
+## OpenAPI document
+
+A machine-readable OpenAPI 3 description of this API lives at
+[`openapi/openapi.json`](../openapi/openapi.json). It is maintained by hand
+(not generated) and guarded by `pnpm check:openapi`
+(`scripts/check-openapi.mjs`), which parses the router chain in
+`apps/api/src/index.ts` and fails, in CI and locally, if a served route is
+missing from the document or a documented route is not served. A checker was
+chosen over a generator because the router is a hand-written `if` chain with
+no route table to generate from, and the task forbids changing source.
+
+Excluded on purpose: the nine `/auth/*` browser session routes
+(`apps/api/src/auth.ts`). They use cookie sessions and redirects rather than
+the Bearer integration surface. The document lists them under
+`x-excluded-routes`, and the check verifies that list matches `auth.ts`.
+
 ## Health
 
 ### GET /health

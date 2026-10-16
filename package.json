@@ -14,7 +14,8 @@
     "dev": "pnpm -r --parallel dev",
     "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "check:openapi": "node scripts/check-openapi.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^9.17.0",
