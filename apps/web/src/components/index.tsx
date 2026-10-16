@@ -36,6 +36,8 @@ export function StatusBadge({ status }: { status: string }) {
     cls = 'badge-warn';
   } else if (status === 'active') {
     cls = 'badge-ok';
+  } else if (status === 'cancelled') {
+    cls = 'badge-neutral';
   } else {
     cls = 'badge-neutral';
   }

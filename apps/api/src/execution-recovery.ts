@@ -29,7 +29,7 @@ export interface RecoveryResult {
  *   - Does NOT reset retry count (preserves existing `attempt`).
  *   - Does NOT execute transactions directly — only changes persisted state.
  *   - Records already in a terminal state (submitted, confirmed, failed,
- *     dead_letter) or queued are NOT touched.
+ *     dead_letter, cancelled) or queued are NOT touched.
  *   - Idempotent: calling recover() multiple times on the same store is safe;
  *     once a record is moved out of "executing", it is no longer eligible.
  *

@@ -167,7 +167,7 @@ test("POST /executions/:id/retry — not found → 404", async () => {
   }
 });
 
-test("POST /executions/:id/cancel — queued → dead_letter", async () => {
+test("POST /executions/:id/cancel — queued → cancelled", async () => {
   const { baseUrl, close, executionStore } = await startServer();
   try {
     const execution = makeExecution({ status: "queued", attempt: 0 });
@@ -180,14 +180,14 @@ test("POST /executions/:id/cancel — queued → dead_letter", async () => {
     });
     assert.equal(res.status, 200);
     const body = await res.json();
-    assert.equal(body.execution.status, "dead_letter");
+    assert.equal(body.execution.status, "cancelled");
     assert.equal(body.execution.error, "cancelled by user");
   } finally {
     await close();
   }
 });
 
-test("POST /executions/:id/cancel — executing → dead_letter", async () => {
+test("POST /executions/:id/cancel — executing → cancelled", async () => {
   const { baseUrl, close, executionStore } = await startServer();
   try {
     const execution = makeExecution({ status: "executing", attempt: 1 });
@@ -200,7 +200,7 @@ test("POST /executions/:id/cancel — executing → dead_letter", async () => {
     });
     assert.equal(res.status, 200);
     const body = await res.json();
-    assert.equal(body.execution.status, "dead_letter");
+    assert.equal(body.execution.status, "cancelled");
   } finally {
     await close();
   }
@@ -249,6 +249,78 @@ test("POST /executions/:id/cancel — not found → 404", async () => {
       body: JSON.stringify({}),
     });
     assert.equal(res.status, 404);
+  } finally {
+    await close();
+  }
+});
+
+test("POST /executions/:id/retry — cancelled execution rejected with 409", async () => {
+  const { baseUrl, close, executionStore } = await startServer();
+  try {
+    const execution = makeExecution({ status: "cancelled", attempt: 1, error: "cancelled by user" });
+    await executionStore.record(execution);
+
+    const res = await fetch(`${baseUrl}/executions/${execution.id}/retry`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    assert.equal(res.status, 409);
+    const body = await res.json();
+    assert.match(body.error, /cannot retry execution in status 'cancelled'/);
+  } finally {
+    await close();
+  }
+});
+
+test("overview counters and queue status after cancellation", async () => {
+  const { baseUrl, close, executionStore } = await startServer();
+  try {
+    const execution = makeExecution({ status: "queued", attempt: 0 });
+    await executionStore.record(execution);
+
+    // Cancel execution
+    const cancelRes = await fetch(`${baseUrl}/executions/${execution.id}/cancel`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    assert.equal(cancelRes.status, 200);
+
+    // GET /overview/attention: deadLetterExecutions must NOT count cancelled executions
+    const attentionRes = await fetch(`${baseUrl}/overview/attention`);
+    assert.equal(attentionRes.status, 200);
+    const attentionBody = await attentionRes.json();
+    assert.equal(attentionBody.deadLetterExecutions, 0);
+    assert.equal(attentionBody.failedExecutions, 0);
+    assert.equal(attentionBody.retryingExecutions, 0);
+    assert.equal(attentionBody.stuckExecutions, 0);
+
+    // GET /agent-queue: byStatus has cancelled: 1 and dead_letter: undefined/0
+    const queueRes = await fetch(`${baseUrl}/agent-queue`);
+    assert.equal(queueRes.status, 200);
+    const queueBody = await queueRes.json();
+    assert.equal(queueBody.byStatus.cancelled, 1);
+    assert.equal(queueBody.byStatus.dead_letter ?? 0, 0);
+  } finally {
+    await close();
+  }
+});
+
+test("migration note: historical dead_letter records with error 'cancelled by user' are still counted as deadLetterExecutions", async () => {
+  const { baseUrl, close, executionStore } = await startServer();
+  try {
+    const historical = makeExecution({
+      status: "dead_letter",
+      error: "cancelled by user",
+      completedAt: "2025-12-01T00:00:00.000Z",
+    });
+    await executionStore.record(historical);
+
+    const res = await fetch(`${baseUrl}/overview/attention`);
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.deadLetterExecutions, 1);
   } finally {
     await close();
   }

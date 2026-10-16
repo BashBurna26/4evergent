@@ -116,6 +116,7 @@ export class ExecutionQueue {
 
   /**
    * Manual retry — transitions failed/dead_letter back to queued.
+   * Cancelled executions cannot be retried.
    * Uses atomic conditional update to prevent race with worker.
    * Includes pre-check guard against ambiguous submission.
    */
@@ -165,7 +166,7 @@ export class ExecutionQueue {
   }
 
   /**
-   * Manual cancellation — transitions queued/executing to dead_letter.
+   * Manual cancellation — transitions queued/executing to cancelled.
    * Uses atomic conditional update to prevent race with worker.
    */
   async cancel(id: string): Promise<{ status: string; execution?: ExecutionRecord }> {
@@ -176,7 +177,7 @@ export class ExecutionQueue {
     }
     const now = new Date().toISOString();
     const updated = await this.store.updateIfStatus(id, existing.status, {
-      status: "dead_letter",
+      status: "cancelled",
       nextRetryAt: null,
       startedAt: null,
       completedAt: now,

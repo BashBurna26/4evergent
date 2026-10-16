@@ -7,8 +7,9 @@ import type { AgentIntent, PolicyDecision, SimulationResult } from "@4evergent/s
  *   executing → in-flight, pipeline running
  *   submitted → pipeline returned txHash
  *   confirmed → on-chain confirmation observed (future; requires indexing)
- *   failed    → pipeline returned an error (eligible for retry if transient)
+ *   failed      → pipeline returned an error (eligible for retry if transient)
  *   dead_letter → exhausted retries / permanent failure
+ *   cancelled   → stopped by operator (terminal, not retried)
  */
 export type ExecutionStatus =
   | "queued"
@@ -16,7 +17,8 @@ export type ExecutionStatus =
   | "submitted"
   | "confirmed"
   | "failed"
-  | "dead_letter";
+  | "dead_letter"
+  | "cancelled";
 
 export interface ExecutionRecord {
   id: string;
