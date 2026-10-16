@@ -128,3 +128,19 @@ All decisions recorded via the ADR-lite convention. Each entry: **Status | Conte
 **Decision:** Sweep sessions 30 days after `expires_at` and daily-spending rows older than 90 UTC days, once per day. Each indexed delete is limited to 500 rows per table and runs as a short autocommit statement. Operators can set the two retention-day environment variables, change the interval, disable the worker, or set either day window to zero to retain that table forever. The idempotency table remains outside this policy and belongs to #109.
 
 **Consequences:** Transient storage is bounded over repeated sweeps without a schema migration or a long-held write transaction. A large backlog drains in batches. Recent expired sessions and the current spending day remain available; setting a zero window explicitly keeps all rows.
+
+## ADR-015: agent-registry rewritten from scaffold to deployed contract
+
+**Status:** Accepted | 2026-09-28
+
+**Context:** `contracts/agent-registry` was originally committed as an unimplemented scaffold: `DESIGN.md` described intent and API mapping only, with no authorization, no validation, and no state semantics. The contract has since been implemented and deployed to Testnet (see `docs/testnet.md` for the contract ID and wasm hash). The scaffold-era `DESIGN.md` still claimed "No implementation yet" and described a contract that no longer exists, misleading contributors who read it first.
+
+**Decision:** Treat `contracts/agent-registry/src/lib.rs` as the source of truth and rewrite `contracts/agent-registry/DESIGN.md` as a post-rewrite design document grounded in the deployed code. The rewrite documents the four entrypoints (`register`, `update_metadata`, `deactivate`, `query`), the `AgentInfo`/`DataKey` data model, the 9-variant `Error` enum, and the TTL policy. Authorization was added to all three mutating entrypoints: each calls `caller.require_auth()` as its first statement, and `register` additionally calls `stellar_address.require_auth()` to bind the on-chain identity to the Stellar account. Open design questions (events #5, id character set #4, validation hardening #8, anti-squatting #7, upgrade path #104, deactivate irreversibility #6, TTL policy #19) are referenced, not decided.
+
+**Consequences:**
+- `DESIGN.md` matches the deployed contract; every claim is checkable against `src/lib.rs` with file+line citations.
+- The pre-rewrite scaffold description is removed; the deployed contract is the only documented behaviour.
+- Authorization is now part of the documented contract surface: mutating entrypoints require the owner's signature, and `register` binds the agent to the Stellar address that authorized it.
+- Open questions remain explicitly open; the document does not present #6, #7, or #19 as settled.
+- No contract behaviour, validation, events, TTL, or permissions-crate code was changed by this decision; it is documentation-only.
+- Deploy commands and the authoritative contract ID/wasm hash stay in `docs/testnet.md` and are linked, not duplicated.
