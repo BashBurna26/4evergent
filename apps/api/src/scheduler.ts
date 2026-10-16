@@ -9,6 +9,7 @@ export class AgentScheduler {
   private running = false;
   private clock: () => Date;
   private intervalMs: number;
+  private maxLatenessMs: number;
 
   constructor(
     private scheduleStore: { get(id: string): Promise<ScheduleRecord | null>; listDue(before: string, limit?: number): Promise<ScheduleRecord[]>; update(id: string, patch: Partial<ScheduleRecord>): Promise<ScheduleRecord | null>; delete(id: string): Promise<boolean> },
@@ -18,6 +19,7 @@ export class AgentScheduler {
   ) {
     this.clock = config.clock ?? (() => new Date());
     this.intervalMs = config.intervalMs ?? 60_000;
+    this.maxLatenessMs = config.maxLatenessMs ?? 5 * 60_000;
   }
 
   start(): void {
@@ -51,6 +53,19 @@ export class AgentScheduler {
 
       // Duplicate trigger guard: skip if already ran at this exact timestamp
       if (schedule.lastRunAt && schedule.lastRunAt === now) continue;
+
+      const scheduledAt = Date.parse(schedule.nextRunAt);
+      const latenessMs = Date.parse(now) - scheduledAt;
+      if (Number.isFinite(scheduledAt) && latenessMs > this.maxLatenessMs) {
+        const { validateScheduleExpression } = await import("@4evergent/database");
+        const next = validateScheduleExpression(schedule.scheduleExpression, schedule.timezone);
+        const nextRunAt = next.valid && next.nextRunAt && Date.parse(next.nextRunAt) > Date.parse(now)
+          ? next.nextRunAt
+          : schedule.nextRunAt;
+        await this.scheduleStore.update(schedule.id, { nextRunAt, lastRunAt: now });
+        console.warn(`[scheduler] skipped stale schedule ${schedule.id}: ${Math.round(latenessMs / 1000)}s late (limit ${Math.round(this.maxLatenessMs / 1000)}s)`);
+        continue;
+      }
 
       try {
         await this.runSchedule(schedule, now);

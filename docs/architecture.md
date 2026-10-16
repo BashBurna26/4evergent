@@ -118,3 +118,13 @@ All decisions recorded via the ADR-lite convention. Each entry: **Status | Conte
 - Backward compatible: existing test helpers using `registerAgent()` still work
 - No production authentication — `requestContext.ownerId` is set server-side (existing limitation)
 - `AgentRecord` has no secret fields by construction
+
+## ADR-014: Bounded missed schedule runs
+
+**Status:** Accepted
+
+**Context:** A process restart can leave scheduled value-moving work overdue. Replaying every missed cron interval creates a burst, while silently running an old occurrence leaves operators unaware of downtime.
+
+**Decision:** Run occurrences due now or up to five minutes late. Skip older occurrences, log the schedule ID and lateness, and advance the schedule to its next cron occurrence. Configure the grace period with `SCHEDULER_MAX_LATENESS_MS` (default `300000`).
+
+**Consequences:** Restart recovery cannot generate an unbounded catch-up burst. A skipped run is visible in server logs; users needing a longer grace period can configure it. Normal on-time execution retains the existing policy and approval pipeline.

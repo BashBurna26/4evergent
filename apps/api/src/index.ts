@@ -96,6 +96,7 @@ export interface ServerOptions {
   scheduler?: {
     enabled?: boolean;
     intervalMs?: number;
+    maxLatenessMs?: number;
     /** Inject a custom scheduler (e.g. for testing). */
     instance?: AgentScheduler;
   };
@@ -452,9 +453,7 @@ export async function createApiServer(options: ServerOptions) {
           }
           return scheduleExecution.executeSchedule(schedule);
         },
-        options.scheduler.intervalMs !== undefined
-          ? { intervalMs: options.scheduler.intervalMs }
-          : {}
+        { intervalMs: options.scheduler.intervalMs, maxLatenessMs: options.scheduler.maxLatenessMs }
       );
 
     scheduler.start();

@@ -192,6 +192,12 @@ async function main() {
       horizonUrl,
       signer,
       dbPath,
+      scheduler: {
+        enabled: process.env.SCHEDULER_ENABLED === "1",
+        maxLatenessMs: Number.isFinite(Number(process.env.SCHEDULER_MAX_LATENESS_MS)) && Number(process.env.SCHEDULER_MAX_LATENESS_MS) >= 0
+          ? Number(process.env.SCHEDULER_MAX_LATENESS_MS)
+          : 5 * 60_000,
+      },
       executionQueue: { enabled: true },
       reconciliation: { enabled: true },
       authProvider,

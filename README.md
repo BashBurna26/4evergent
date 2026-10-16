@@ -212,6 +212,10 @@ curl -X POST http://localhost:3000/agents/<agent-id>/schedules/<schedule-id>/dis
 
 Schedules are stored in SQLite (when `dbPath` is configured) or in-memory. The scheduler polls every 60 seconds by default. Failed schedules do not stop the scheduler.
 
+### Missed runs
+
+The scheduler runs an occurrence that is due now or up to five minutes late. If a process restart leaves an occurrence more than five minutes overdue, it skips that occurrence, records the skip in the scheduler log, and advances to the next cron occurrence. Multiple missed intervals never produce a catch-up burst. Set `SCHEDULER_MAX_LATENESS_MS` to change the grace period; the default is `300000` (five minutes). The server starts the scheduler only when `SCHEDULER_ENABLED=1`.
+
 ## Operator CLI
 
 The `4evergent` CLI is an operator client that talks HTTP to the API server.
