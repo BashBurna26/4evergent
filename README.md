@@ -229,6 +229,10 @@ curl -X POST http://localhost:3000/agents/<agent-id>/schedules/<schedule-id>/dis
 
 Schedules are stored in SQLite (when `dbPath` is configured) or in-memory. The scheduler polls every 60 seconds by default. Failed schedules do not stop the scheduler. The scheduler, execution queue and reconciliation worker intervals are configurable via `SCHEDULER_INTERVAL_MS`, `EXECUTION_QUEUE_INTERVAL_MS` (default 10s) and `RECONCILIATION_INTERVAL_MS` (default 30s); see [docs/testnet.md](docs/testnet.md#worker-intervals).
 
+### Missed runs
+
+The scheduler runs an occurrence that is due now or up to five minutes late. If a process restart leaves an occurrence more than five minutes overdue, it skips that occurrence, records the skip in the scheduler log, and advances to the next cron occurrence. If the expression is invalid or cannot produce a strictly future occurrence, the scheduler pauses it and logs why; correct the expression before resuming it. Multiple missed intervals never produce a catch-up burst. Set `SCHEDULER_MAX_LATENESS_MS` to change the grace period; the default is `300000` (five minutes). The server starts the scheduler only when `SCHEDULER_ENABLED=1`.
+
 ## Operator CLI
 
 The `4evergent` CLI is an operator client that talks HTTP to the API server.

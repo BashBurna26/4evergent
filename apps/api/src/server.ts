@@ -247,6 +247,12 @@ async function main() {
       horizonUrl,
       signer,
       dbPath,
+      scheduler: {
+        enabled: process.env.SCHEDULER_ENABLED === "1",
+        maxLatenessMs: Number.isFinite(Number(process.env.SCHEDULER_MAX_LATENESS_MS)) && Number(process.env.SCHEDULER_MAX_LATENESS_MS) >= 0
+          ? Number(process.env.SCHEDULER_MAX_LATENESS_MS)
+          : 5 * 60_000,
+      },
       retention: {
         enabled: process.env.DATA_RETENTION_ENABLED !== "0",
         intervalMs: parseRetentionInterval(process.env.DATA_RETENTION_INTERVAL_MS, 24 * 60 * 60_000),
