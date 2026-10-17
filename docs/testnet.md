@@ -282,3 +282,13 @@ A faster reconciliation loop is handy for a testnet demo; a slower one reduces H
 - Single-process architecture (no distributed workers).
 - Production authentication not implemented.
 - No live transaction has been executed by CI. All tests use deterministic mocks.
+
+## Integrating with agent-registry from TypeScript
+
+See [`soroban-integration.md`](soroban-integration.md) for a TypeScript consumer
+guide: the Rust→TS type mapping for `AgentInfo` and the `Error` enum, the
+four entry points with parameters and return shapes, the authorization model,
+and a verified `query()` snippet against the deployed contract.
+
+The CLI verification above (`stellar contract invoke -- query`) is the shell
+equivalent of the SDK call documented there.
