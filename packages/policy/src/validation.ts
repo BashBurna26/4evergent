@@ -30,7 +30,7 @@ const SUPPORTED_TX_TYPES = ["payment", "trustline", "contract_call", "account_se
 export function validatePolicyRules(rules: any): PolicyValidationResult {
   const errors: string[] = [];
 
-  if (!rules || typeof rules !== "object") {
+  if (!rules || typeof rules !== "object" || Array.isArray(rules)) {
     return { valid: false, errors: ["Policy must be an object"] };
   }
 

@@ -1,19 +1,38 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api';
 import type { ActivityRecord } from '../types';
-import { StatusBadge, Skeleton, EmptyState, IntentAmount } from '../components';
+import { StatusBadge, Skeleton, EmptyState, IntentAmount, PaginationFooter } from '../components';
+
+const PAGE_SIZE = 50;
 
 export default function Activity() {
   const [activity, setActivity] = useState<ActivityRecord[] | null>(null);
+  const [hasMore, setHasMore] = useState(false);
+  const [nextOffset, setNextOffset] = useState(0);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const navigate = useNavigate();
 
-  useEffect(() => {
-    api.listActivity()
-      .then((r) => setActivity(r.activity))
-      .catch((e: any) => setError(e.message));
+  const loadPage = useCallback(async (offset: number, replace: boolean) => {
+    try {
+      const r = await api.listActivity(PAGE_SIZE, offset);
+      setActivity(replace ? r.activity : (prev) => (prev ?? []).concat(r.activity));
+      setHasMore(r.hasMore);
+      setNextOffset(offset + r.activity.length);
+    } catch (e: any) {
+      setError(e.message);
+    }
   }, []);
+
+  useEffect(() => {
+    loadPage(0, true).catch(() => {});
+  }, [loadPage]);
+
+  const loadMore = () => {
+    setLoadingMore(true);
+    loadPage(nextOffset, false).finally(() => setLoadingMore(false));
+  };
 
   if (error) return <EmptyState title="Failed to load activity" message={error} />;
   if (activity === null) return <Skeleton label="Loading activity..." />;
@@ -63,6 +82,8 @@ export default function Activity() {
           </tbody>
         </table>
       </div>
+
+      <PaginationFooter hasMore={hasMore} loadingMore={loadingMore} onLoadMore={loadMore} itemCount={activity.length} />
     </section>
   );
 }

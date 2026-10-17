@@ -9,6 +9,12 @@
 //!   calls `require_auth()` as its first statement; only the registered owner
 //!   may update/deactivate their own agent.
 //!
+//! Agent ids are case-sensitive and are not normalized. They must start with
+//! an ASCII lowercase letter or digit, followed only by ASCII lowercase
+//! letters, digits, `.`, `_`, or `-`. Uppercase and non-ASCII characters are
+//! rejected. The 64-byte limit is measured in UTF-8 bytes (all accepted ids
+//! are ASCII, so this is also their character count).
+//!
 //! Events: each successful mutation publishes a contract event with topics
 //! `("agent", <action>)` — see `DESIGN.md` for the full event schema.
 //!
@@ -76,6 +82,7 @@ pub enum Error {
     DisplayNameTooLong = 7,
     TooManyCapabilities = 8,
     CapabilityTooLong = 9,
+    InvalidIdChar = 10,
 }
 
 #[contract]
@@ -87,6 +94,21 @@ fn validate_id(id: &String) -> Result<(), Error> {
     }
     if id.len() > MAX_ID_LEN {
         return Err(Error::IdTooLong);
+    }
+    // soroban-sdk 22 exposes String::copy_into_slice (rather than to_bytes).
+    // The length check above bounds this stack buffer to MAX_ID_LEN bytes.
+    let len = id.len() as usize;
+    let mut bytes = [0u8; MAX_ID_LEN as usize];
+    id.copy_into_slice(&mut bytes[..len]);
+    for (index, byte) in bytes[..len].iter().enumerate() {
+        let lowercase = (b'a'..=b'z').contains(&byte);
+        let digit = (b'0'..=b'9').contains(&byte);
+        let allowed_punctuation = matches!(byte, b'.' | b'_' | b'-');
+        if (index == 0 && !lowercase && !digit)
+            || (index > 0 && !lowercase && !digit && !allowed_punctuation)
+        {
+            return Err(Error::InvalidIdChar);
+        }
     }
     Ok(())
 }
@@ -517,6 +539,37 @@ mod test {
             &Vec::new(&env),
         );
         assert_eq!(client.query(&max).unwrap().id, max);
+    }
+
+    #[test]
+    fn test_id_charset_is_ascii_lowercase_and_case_sensitive() {
+        let (env, _cid, client) = setup();
+        env.mock_all_auths();
+        let owner = Address::generate(&env);
+
+        for invalid in [
+            "Agent_1", "agent 1", "agent\n1", "agenté", ".agent", "_agent", "-agent",
+        ] {
+            let id = String::from_str(&env, invalid);
+            let res = client.try_register(
+                &owner,
+                &id,
+                &String::from_str(&env, "A"),
+                &owner,
+                &Vec::new(&env),
+            );
+            assert_eq!(want_err(res), Error::InvalidIdChar, "id: {invalid:?}");
+        }
+
+        let valid = String::from_str(&env, "agent_1.v2-test");
+        client.register(
+            &owner,
+            &valid,
+            &String::from_str(&env, "A"),
+            &owner,
+            &Vec::new(&env),
+        );
+        assert_eq!(client.query(&valid).unwrap().id, valid);
     }
 
     #[test]

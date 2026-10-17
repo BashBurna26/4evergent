@@ -46,6 +46,7 @@ import {
   type ActivityRecord,
   type PolicyConfigStore,
   createActivity,
+  isOffsetAtCeiling,
 } from "@4evergent/database";
 import type { PolicyRules, Agent, RequestContext, AuthorizationService, AuthProvider, AuthenticatedPrincipal } from "@4evergent/shared";
 import { createAuthModule, type PrincipalResolution } from "./auth.js";
@@ -97,6 +98,7 @@ export interface ServerOptions {
   scheduler?: {
     enabled?: boolean;
     intervalMs?: number;
+    maxLatenessMs?: number;
     /** Inject a custom scheduler (e.g. for testing). */
     instance?: AgentScheduler;
   };
@@ -460,9 +462,7 @@ export async function createApiServer(options: ServerOptions) {
           }
           return scheduleExecution.executeSchedule(schedule);
         },
-        options.scheduler.intervalMs !== undefined
-          ? { intervalMs: options.scheduler.intervalMs }
-          : {}
+        { intervalMs: options.scheduler.intervalMs, maxLatenessMs: options.scheduler.maxLatenessMs }
       );
 
     scheduler.start();
@@ -819,18 +819,25 @@ export async function createApiServer(options: ServerOptions) {
     const allowed = await authorizationService.canAccessAgent(ctx, agentId);
     if (!allowed) return json(res, { error: "not found" }, 404);
     const limit = Math.max(1, Math.min(100, Number(urlObj.searchParams.get("limit") ?? 50) || 50));
-    const activity = await store.listByAgent(agentId, limit);
-    return json(res, { agentId, activity });
+    const offset = Math.max(0, Number(urlObj.searchParams.get("offset") ?? 0) || 0);
+    const all = await store.listByAgent(agentId, limit + 1, offset);
+    const activity = all.slice(0, limit);
+    const hasMore = all.length > limit && !isOffsetAtCeiling(offset);
+    return json(res, { agentId, activity, hasMore });
   }
 
   async function handleListApprovals(ctx: RequestContext, req: any, res: any) {
     const urlObj = new URL(req.url ?? "", "http://localhost");
     const statusFilter = urlObj.searchParams.get("status") ?? undefined;
-    const all = await approvals.listByOwner(ctx.ownerId!, 200);
-    const filtered = statusFilter
-      ? all.filter((r) => r.status === statusFilter).slice(0, 50)
-      : all.slice(0, 50);
-    return json(res, { approvals: filtered });
+    const limit = Math.max(1, Math.min(200, Number(urlObj.searchParams.get("limit") ?? 50) || 50));
+    const offset = Math.max(0, Number(urlObj.searchParams.get("offset") ?? 0) || 0);
+    const rows = await approvals.listByOwner(ctx.ownerId!, limit, offset, statusFilter);
+    const total = await approvals.countByOwner(ctx.ownerId!, statusFilter);
+    // `truncated`: more matching rows exist beyond this page.
+    // `hasMore`: the client can actually fetch them (offset ceiling ends pagination).
+    const truncated = offset + rows.length < total;
+    const hasMore = truncated && !isOffsetAtCeiling(offset);
+    return json(res, { approvals: rows, hasMore, truncated, total });
   }
 
   async function handleGetApproval(ctx: RequestContext, req: any, res: any) {
@@ -970,9 +977,12 @@ export async function createApiServer(options: ServerOptions) {
     const allowed = await authorizationService.canAccessAgent(ctx, agentId);
     if (!allowed) return json(res, { error: "not found" }, 404);
     const statusFilter = urlObj.searchParams.get("status") ?? undefined;
-    const all = await approvals.listByAgent(agentId, 200);
-    const filtered = statusFilter ? all.filter((r) => r.status === statusFilter).slice(0, 50) : all.slice(0, 50);
-    return json(res, { agentId, approvals: filtered });
+    const limit = Math.max(1, Math.min(100, Number(urlObj.searchParams.get("limit") ?? 50) || 50));
+    const offset = Math.max(0, Number(urlObj.searchParams.get("offset") ?? 0) || 0);
+    const rows = await approvals.listByAgent(agentId, limit + 1, offset, statusFilter);
+    const page = rows.slice(0, limit);
+    const hasMore = rows.length > limit && !isOffsetAtCeiling(offset);
+    return json(res, { agentId, approvals: page, hasMore });
   }
 
   async function handleUpdateAgentStatus(ctx: RequestContext, req: any, res: any) {
@@ -1006,8 +1016,11 @@ export async function createApiServer(options: ServerOptions) {
     const allowed = await authorizationService.canAccessAgent(ctx, agentId);
     if (!allowed) return json(res, { error: "not found" }, 404);
     const limit = Math.max(1, Math.min(100, Number(urlObj.searchParams.get("limit") ?? 50) || 50));
-    const all = await schedules.listByAgent(agentId, limit);
-    return json(res, { agentId, schedules: all });
+    const offset = Math.max(0, Number(urlObj.searchParams.get("offset") ?? 0) || 0);
+    const all = await schedules.listByAgent(agentId, limit + 1, offset);
+    const page = all.slice(0, limit);
+    const hasMore = all.length > limit && !isOffsetAtCeiling(offset);
+    return json(res, { agentId, schedules: page, hasMore });
   }
 
   async function handleGetSchedule(ctx: RequestContext, req: any, res: any) {
@@ -1155,8 +1168,11 @@ export async function createApiServer(options: ServerOptions) {
     const allowed = await authorizationService.canAccessAgent(ctx, agentId);
     if (!allowed) return json(res, { error: "not found" }, 404);
     const limit = Math.max(1, Math.min(100, Number(urlObj.searchParams.get("limit") ?? 50) || 50));
-    const all = await executionStore.listByAgent(agentId, limit);
-    return json(res, { agentId, executions: all });
+    const offset = Math.max(0, Number(urlObj.searchParams.get("offset") ?? 0) || 0);
+    const all = await executionStore.listByAgent(agentId, limit + 1, offset);
+    const executions = all.slice(0, limit);
+    const hasMore = all.length > limit && !isOffsetAtCeiling(offset);
+    return json(res, { agentId, executions, hasMore });
   }
 
   async function handleExecutionDetail(ctx: RequestContext, req: any, res: any) {
@@ -1173,10 +1189,10 @@ export async function createApiServer(options: ServerOptions) {
     if (!executionQueue) {
       return json(res, { error: "execution queue not enabled" }, 404);
     }
-    const all = await executionStore.listByOwner(ctx.ownerId!, 200);
+    const execCounts = await executionStore.countByOwner(ctx.ownerId!);
     const byStatus: Record<string, number> = {};
-    for (const e of all) {
-      byStatus[e.status] = (byStatus[e.status] ?? 0) + 1;
+    for (const [status, count] of Object.entries(execCounts)) {
+      if (count > 0) byStatus[status] = count;
     }
     return json(res, {
       running: executionQueue.isRunning(),
@@ -1187,8 +1203,7 @@ export async function createApiServer(options: ServerOptions) {
 
   async function handleGetOverviewAttention(ctx: RequestContext, _req: any, res: any) {
     const ownerId = ctx.ownerId!;
-    const pendingApprovals = (await approvals.listByOwner(ownerId, 200))
-      .filter((a) => a.status === "pending_approval").length;
+    const pendingApprovals = await approvals.countByOwner(ownerId, "pending_approval");
     const execCounts: Record<ExecutionStatus, number> =
       await executionStore.countByOwner(ownerId);
     return json(res, {
@@ -1208,15 +1223,21 @@ export async function createApiServer(options: ServerOptions) {
   async function handleListExecutions(ctx: RequestContext, req: any, res: any) {
     const urlObj = new URL(req.url ?? "", "http://localhost");
     const limit = Math.max(1, Math.min(100, Number(urlObj.searchParams.get("limit") ?? 50) || 50));
-    const executions = await executionStore.listByOwner(ctx.ownerId!, limit);
-    return json(res, { executions });
+    const offset = Math.max(0, Number(urlObj.searchParams.get("offset") ?? 0) || 0);
+    const all = await executionStore.listByOwner(ctx.ownerId!, limit + 1, offset);
+    const executions = all.slice(0, limit);
+    const hasMore = all.length > limit && !isOffsetAtCeiling(offset);
+    return json(res, { executions, hasMore });
   }
 
   async function handleListActivity(ctx: RequestContext, req: any, res: any) {
     const urlObj = new URL(req.url ?? "", "http://localhost");
     const limit = Math.max(1, Math.min(100, Number(urlObj.searchParams.get("limit") ?? 50) || 50));
-    const activity = await store.listByOwner(ctx.ownerId!, limit);
-    return json(res, { activity });
+    const offset = Math.max(0, Number(urlObj.searchParams.get("offset") ?? 0) || 0);
+    const all = await store.listByOwner(ctx.ownerId!, limit + 1, offset);
+    const activity = all.slice(0, limit);
+    const hasMore = all.length > limit && !isOffsetAtCeiling(offset);
+    return json(res, { activity, hasMore });
   }
 
   async function handleRetryExecution(ctx: RequestContext, req: any, res: any) {
@@ -1645,7 +1666,7 @@ function json(res: any, body: unknown, status = 200) {
   res.end(JSON.stringify(body));
 }
 
-function readBody(req: any): Promise<string> {
+export function readBody(req: any): Promise<string> {
   return new Promise((resolve, reject) => {
     let data = "";
     req.on("data", (chunk: Buffer) => {

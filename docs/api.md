@@ -392,6 +392,19 @@ Delete a schedule. `200` → `{ "deleted": true }`.
 Transition schedule status (`paused` / `active` / `disabled`).
 `200` → `{ "schedule" }`.
 
+### Missed schedule runs
+
+An occurrence due now or no more than five minutes ago follows the normal
+execution path and still passes policy and approval checks. An occurrence more
+than five minutes late is logged and skipped; the scheduler advances the
+schedule to its next cron occurrence rather than replaying every missed
+interval. Configure the grace period with `SCHEDULER_MAX_LATENESS_MS` (default
+`300000` milliseconds). This single-run grace window avoids unbounded payment
+bursts after downtime while preserving near-on-time schedules. If the cron
+expression is invalid or cannot produce a strictly future occurrence during
+recovery, the scheduler pauses that schedule and logs the reason. Correct the
+expression before resuming it.
+
 ---
 
 ## Executions
