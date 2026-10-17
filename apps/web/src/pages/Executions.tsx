@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api';
 import type { ExecutionRecord, QueueSummary, ExecutionStatus } from '../types';
-import { PaginationFooter } from '../components';
+import { EmptyState, PaginationFooter, Skeleton } from '../components';
 
 type StatusFilter = 'all' | ExecutionStatus;
 
@@ -200,15 +200,3 @@ function Card({ title, value }: { title: string; value: string }) {
   );
 }
 
-function Skeleton({ label }: { label: string }) {
-  return <div className="skeleton">{label}</div>;
-}
-
-function EmptyState({ title, message }: { title: string; message: string }) {
-  return (
-    <div className="empty-state">
-      <h2>{title}</h2>
-      <p>{message}</p>
-    </div>
-  );
-}

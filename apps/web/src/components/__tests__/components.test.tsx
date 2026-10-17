@@ -255,8 +255,8 @@ describe('Shared UI Components', () => {
 
   describe('Skeleton and EmptyState', () => {
     it('renders Skeleton with the provided label', () => {
-      const { container } = render(<Skeleton label="Loading data..." />);
-      const skeleton = container.querySelector('.skeleton');
+      render(<Skeleton label="Loading data..." />);
+      const skeleton = screen.getByRole('status', { name: 'Loading data...' });
       expect(skeleton).toBeInTheDocument();
       expect(skeleton).toHaveTextContent('Loading data...');
     });

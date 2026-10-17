@@ -60,6 +60,10 @@ export default function Login({ onSuccess }: LoginProps) {
   const paramsRef = useRef(new URLSearchParams(window.location.search));
 
   useEffect(() => {
+    // The auth config request is fast enough that the form stays usable while it
+    // resolves. We intentionally do not gate the page behind a full-page skeleton,
+    // because the login screen is already interactive and the config merely toggles
+    // optional provider buttons and registration availability.
     api
       .authConfig()
       .then(setConfig)

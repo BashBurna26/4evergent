@@ -49,7 +49,7 @@ describe('ScheduleList component', () => {
       </MemoryRouter>
     );
 
-    expect(screen.getByText('Loading schedules...')).toBeInTheDocument();
+    expect(screen.getByRole('status', { name: 'Loading schedules...' })).toBeInTheDocument();
   });
 
   it('renders error state and invokes onError when api rejects', async () => {
