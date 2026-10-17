@@ -40,10 +40,25 @@ const tx = new TransactionBuilder(account, { fee: "100", networkPassphrase: Netw
   .build();
 
 const sim = await server.simulateTransaction(tx);
-// A simulated contract error is NOT a rejected promise — the response is a
-// union. Guard with the SDK's type guard, then unwrap the retval:
-const result = rpc.Api.isSimulationSuccess(sim) ? sim.result : null;
-const info = scValToNative(result?.retval ?? null);
+
+// simulateTransaction returns a union. An unsuccessful simulation is NOT a
+// rejected promise — it is a SimulateTransactionErrorResponse with a
+// non-empty `error` string. Handle it explicitly; do NOT collapse it to
+// null, because a successful query of a missing agent also yields null.
+if (!rpc.Api.isSimulationSuccess(sim)) {
+  throw new Error(`simulation failed: ${sim.error}`);
+}
+
+// Only now is it safe to decode the return value. A successful simulation
+// still has two distinct null-producing outcomes:
+//   - retval is scvVoid  -> the contract returned an Error variant
+//     (e.g. InvalidIdChar for a malformed id)
+//   - retval decodes to null -> Ok(None): the id is valid but no record exists
+const retval = sim.result?.retval;
+if (!retval || retval.switch().name === "scvVoid") {
+  throw new Error("contract returned an error (scvVoid retval)");
+}
+const info = scValToNative(retval);
 // { id, owner, display_name, stellar_address, capabilities, created_at, updated_at, active }
 ```
 
@@ -54,8 +69,15 @@ Against the live contract at `CDXQRPVGMPJB5UXQHKFAPBLK6G37DSVKDW2BKRAF76RO5ENCCB
 | Query input | `retval` on success | When |
 |---|---|---|
 | `"deploy_smoke"` (registered) | `scvMap` with 8 keys: `active`, `capabilities`, `created_at`, `display_name`, `id`, `owner`, `stellar_address`, `updated_at` | Record exists |
-| `"not_registered"` (never registered) | `null` (`Ok(None)`) | Record missing — **not an error**, `query` returns `Option<AgentInfo>` |
-| `"UPPER"` (uppercase = invalid charset) | `scvVoid` (empty retval) | Contract returned `Error(InvalidIdChar)` — the envelope simulates fine, but `result.retval` is `scvVoid` and the diagnostic events carry `Error(WasmVm, InvalidAction)` |
+| `"not_registered"` (never registered) | `scvVoid` decoding to `null` (`Ok(None)`) | Record missing — **not an error**, `query` returns `Option<AgentInfo>` |
+| `"UPPER"` (uppercase = invalid charset) | `scvVoid` | Contract returned `Error(InvalidIdChar)` — the envelope simulates fine, and the diagnostic events carry `Error(WasmVm, InvalidAction)` |
+
+`"not_registered"` and `"UPPER"` both return `scvVoid` at the `ScVal` level —
+they are indistinguishable by retval alone. The difference is observable in the
+simulation's diagnostic events (the error case carries a
+`[Diagnostic Event] topics:[error, Error(WasmVm, InvalidAction)]` entry). If you
+need to distinguish them in code, either validate the id format before calling,
+or parse `sim.events` for the error topic.
 
 `created_at`/`updated_at` arrive as `bigint` (Unix seconds); convert with
 `Number(...)` or `new Date(Number(v) * 1000)`. `owner` and `stellar_address`
@@ -145,7 +167,10 @@ const tx = new TransactionBuilder(account, {...})
   .addOperation(contract.call("query", nativeToScVal("agent_id")))
   .build();
 const sim = await server.simulateTransaction(tx);
-const result = sim.result.retval // scvVal or null (scvVoid if a contract Error)
+// Same guard as the quick start: the simulation union must be resolved first.
+const result = rpc.Api.isSimulationSuccess(sim) ? sim.result : null;
+const info = result?.retval ? scValToNative(result.retval) : null;
+// info is AgentInfo | null  (null = valid id, no record — Ok(None))
 ```
 
 - Returns `null` when the id does not exist (Ok(None)) — **not an error**.
