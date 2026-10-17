@@ -36,24 +36,26 @@ const account = new Account(caller.publicKey(), "1");
 
 const tx = new TransactionBuilder(account, { fee: "100", networkPassphrase: Networks.TESTNET })
   .setTimeout(30)
-  .addOperation(contract.call("query", nativeToScVal("deploy_smoke"))
+  .addOperation(contract.call("query", nativeToScVal("deploy_smoke")))
   .build();
 
 const sim = await server.simulateTransaction(tx);
-// sim.result is { auth: [], retval: ScVal }
-const info = scValToNative(sim.result.retval);
+// A simulated contract error is NOT a rejected promise — the response is a
+// union. Guard with the SDK's type guard, then unwrap the retval:
+const result = rpc.Api.isSimulationSuccess(sim) ? sim.result : null;
+const info = scValToNative(result?.retval ?? null);
 // { id, owner, display_name, stellar_address, capabilities, created_at, updated_at, active }
 ```
 
 ### Verified testnet responses
 
-Against the live contract at `CDXQRPVGMPJB5UXQHKFAPBLK6G37DSVKDW2BKRAF76RO5ENCCB4W3QXJ`:
+Against the live contract at `CDXQRPVGMPJB5UXQHKFAPBLK6G37DSVKDW2BKRAF76RO5ENCCB4W3QX7`:
 
 | Query input | `retval` on success | When |
 |---|---|---|
 | `"deploy_smoke"` (registered) | `scvMap` with 8 keys: `active`, `capabilities`, `created_at`, `display_name`, `id`, `owner`, `stellar_address`, `updated_at` | Record exists |
 | `"not_registered"` (never registered) | `null` (`Ok(None)`) | Record missing — **not an error**, `query` returns `Option<AgentInfo>` |
-| `"UPPER"` (uppercase = invalid charset) | `scvVoid` (empty retval) | Contract returned `Error(InvalidIdChar)` — the transaction simulation succeeds at the envelope level, but `result.retval` is `scvVoid` and `sim.error` carries an `InvalidAction` |
+| `"UPPER"` (uppercase = invalid charset) | `scvVoid` (empty retval) | Contract returned `Error(InvalidIdChar)` — the envelope simulates fine, but `result.retval` is `scvVoid` and the diagnostic events carry `Error(WasmVm, InvalidAction)` |
 
 `created_at`/`updated_at` arrive as `bigint` (Unix seconds); convert with
 `Number(...)` or `new Date(Number(v) * 1000)`. `owner` and `stellar_address`
