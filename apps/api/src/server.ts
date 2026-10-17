@@ -12,6 +12,9 @@
  *   HOST                        — Bind host (default: 127.0.0.1; set 0.0.0.0 in a container)
  *   DATABASE_PATH               — SQLite file path (optional, in-memory if unset)
  *   DEV_OWNER_ID                — Development owner identity (default: "operator")
+ *   RECONCILIATION_INTERVAL_MS  — Reconciliation worker interval in ms (default: 30000)
+ *   EXECUTION_QUEUE_INTERVAL_MS — Execution queue worker interval in ms (default: 10000)
+ *   SCHEDULER_INTERVAL_MS       — Scheduler poll interval in ms (default: 60000)
  *
  * LIVE_SUBMIT must be explicitly set to "1" to enable real Testnet submission.
  *
@@ -45,6 +48,38 @@ function parseRetentionInterval(value: string | undefined, fallback: number): nu
   if (value === undefined || value.trim() === "") return fallback;
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+/**
+ * Parse a worker interval env var. Unset or empty means "use the worker's
+ * built-in default" (returns undefined). Anything else must be a finite number
+ * greater than zero; otherwise this throws so startup fails fast with a clear
+ * message instead of silently falling back to the default.
+ */
+export function parseIntervalEnv(name: string, value: string | undefined): number | undefined {
+  if (value === undefined || value.trim() === "") return undefined;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error(
+      `Invalid ${name}: expected a positive number of milliseconds, got '${value}'.`
+    );
+  }
+  return parsed;
+}
+
+export interface WorkerIntervals {
+  reconciliationIntervalMs: number | undefined;
+  executionQueueIntervalMs: number | undefined;
+  schedulerIntervalMs: number | undefined;
+}
+
+/** Read and validate all worker interval env vars. Throws on the first invalid value. */
+export function readWorkerIntervals(env: NodeJS.ProcessEnv): WorkerIntervals {
+  return {
+    reconciliationIntervalMs: parseIntervalEnv("RECONCILIATION_INTERVAL_MS", env.RECONCILIATION_INTERVAL_MS),
+    executionQueueIntervalMs: parseIntervalEnv("EXECUTION_QUEUE_INTERVAL_MS", env.EXECUTION_QUEUE_INTERVAL_MS),
+    schedulerIntervalMs: parseIntervalEnv("SCHEDULER_INTERVAL_MS", env.SCHEDULER_INTERVAL_MS),
+  };
 }
 
 function parseApiKeys(envVar: string | undefined): Record<string, { ownerId: string; subject: string }> {
@@ -117,6 +152,14 @@ async function main() {
   const host = process.env.HOST || "127.0.0.1";
   const dbPath = process.env.DATABASE_PATH || undefined;
   const devOwnerId = process.env.DEV_OWNER_ID || "operator";
+
+  let workerIntervals: WorkerIntervals;
+  try {
+    workerIntervals = readWorkerIntervals(process.env);
+  } catch (err: any) {
+    console.error(`FATAL: ${err.message}`);
+    process.exit(1);
+  }
 
   // Validate network configuration at startup
   if (!horizonUrl.includes("testnet")) {
@@ -210,8 +253,9 @@ async function main() {
         authSessionDays: parseRetentionDays(process.env.AUTH_SESSION_RETENTION_DAYS, 30),
         dailySpendingDays: parseRetentionDays(process.env.DAILY_SPENDING_RETENTION_DAYS, 90),
       },
-      executionQueue: { enabled: true },
-      reconciliation: { enabled: true },
+      executionQueue: { enabled: true, intervalMs: workerIntervals.executionQueueIntervalMs },
+      reconciliation: { enabled: true, intervalMs: workerIntervals.reconciliationIntervalMs },
+      scheduler: { intervalMs: workerIntervals.schedulerIntervalMs },
       authProvider,
       authModule,
       corsOrigin: webOrigin,
