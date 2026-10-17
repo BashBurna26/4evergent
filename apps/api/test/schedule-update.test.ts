@@ -411,20 +411,22 @@ test("PATCH scheduleExpression → scheduler runs at NEW time, not old", async (
     assert.ok(afterFirstRun!.lastRunAt, "lastRunAt should be set after first run");
 
     // --- Step 2: PATCH via the production handler ---
-    // New expression: every minute ("* * * * *") — will be due within a minute.
-    const res = await patchSchedule(baseUrl, "test-agent", schedule.id, { scheduleExpression: "* * * * *" });
+    // New expression: at minute 30 of each hour. This cannot coincide with
+    // the old expression's top-of-hour occurrence, unlike an every-minute
+    // schedule when the test happens to run just before the hour.
+    const res = await patchSchedule(baseUrl, "test-agent", schedule.id, { scheduleExpression: "30 * * * *" });
     assert.equal(res.status, 200);
-    assert.equal(res.body.schedule.scheduleExpression, "* * * * *");
+    assert.equal(res.body.schedule.scheduleExpression, "30 * * * *");
 
     // --- Step 3: Verify production logic recalculated nextRunAt ---
     // The PATCH handler computed this from the NEW expression — no manual injection.
     const patched = await store.get(schedule.id);
     assert.ok(patched, "schedule should exist after PATCH");
-    assert.equal(patched!.scheduleExpression, "* * * * *");
+    assert.equal(patched!.scheduleExpression, "30 * * * *");
     assert.notEqual(patched!.nextRunAt, afterFirstRun!.nextRunAt, "nextRunAt must differ after PATCH (recalculated from new expression)");
-    // New expression fires every minute → nextRunAt within ~60s of now.
+    // New expression fires at the next half-hour boundary, within an hour.
     const drift = new Date(patched!.nextRunAt).getTime() - Date.now();
-    assert.ok(drift > 0 && drift <= 60_000, `nextRunAt should be within 60s in the future (got ${drift}ms)`);
+    assert.ok(drift > 0 && drift <= 60 * 60_000, `nextRunAt should be within an hour in the future (got ${drift}ms)`);
 
     // --- Step 4: Scheduler uses the NEW persisted nextRunAt ---
     // Time just BEFORE the new nextRunAt → schedule must NOT be due.
