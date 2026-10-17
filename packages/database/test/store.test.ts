@@ -195,6 +195,33 @@ runStoreTests("SQLite", () => {
   };
 });
 
+for (const kind of ["InMemory", "SQLite"] as const) {
+  test(`${kind}: retention sweep deletes old daily spending and preserves the current day`, async () => {
+    let store: InMemoryActivityStore | SQLiteActivityStore;
+    let dir: string | undefined;
+    if (kind === "SQLite") {
+      dir = mkdtempSync(join(tmpdir(), "4evergent-retention-"));
+      store = new SQLiteActivityStore(join(dir, "retention.db"));
+    } else {
+      store = new InMemoryActivityStore();
+    }
+    try {
+      const asDate = (day: string) => new Date(`${day}T12:00:00.000Z`);
+      await store.reserveDailySpending("agent-a", "XLM", "1", "10", asDate("2025-01-01"));
+      await store.reserveDailySpending("agent-a", "XLM", "2", "10", asDate("2025-01-02"));
+      await store.reserveDailySpending("agent-a", "XLM", "3", "10", asDate("2025-01-03"));
+
+      assert.equal(await store.sweepDailySpending("2025-01-03"), 2);
+      assert.equal(await store.getDailySpending("agent-a", "XLM", asDate("2025-01-02")), null);
+      assert.equal(await store.getDailySpending("agent-a", "XLM", asDate("2025-01-03")), 3);
+      assert.equal(await store.sweepDailySpending("2025-01-03"), 0);
+    } finally {
+      if (store instanceof SQLiteActivityStore) store.close();
+      if (dir) rmSync(dir, { recursive: true, force: true });
+    }
+  });
+}
+
 test("SQLite: second pending approval for same activity is rejected", async () => {
   const dir = mkdtempSync(join(tmpdir(), "4evergent-dup-"));
   const path = join(dir, "dup.db");

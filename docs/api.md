@@ -19,6 +19,90 @@ All endpoints except `GET /health` require authentication.
 Unauthenticated requests to protected endpoints return
 `{"error":"unauthorized"}` with status `401`.
 
+## User Authentication (Browser Sessions)
+
+In addition to API-key auth for machine clients, the API supports
+browser-based user sessions for humans. Sessions live in an HttpOnly,
+SameSite=Lax cookie named `four_eg_session`. Three login methods are
+supported: email+password, Google OAuth, and Stellar wallet signature.
+
+CSRF protection: cookie-authenticated state-changing requests must carry
+the `X-Requested-With` header. Bearer/API-key requests are unaffected.
+
+### GET /auth/config
+
+Public. Returns which login methods the server has enabled:
+
+```json
+{
+  "email": true,
+  "google": true,
+  "stellar": true,
+  "allowRegistration": true
+}
+```
+
+### POST /auth/register
+
+Create a new email+password account. Only available when
+`allowRegistration` is `true`.
+
+Body: `{ "email": string (required), "password": string (required, min 8 chars), "displayName"?: string }`
+
+- `201` → `{ "user": { "id", "email", "displayName" } }` — session cookie is set
+- `400` → invalid JSON / missing fields / password too short
+- `409` → email already registered
+- `403` → registration disabled
+
+### POST /auth/login/email
+
+Login with email+password.
+
+Body: `{ "email": string (required), "password": string (required) }`
+
+- `200` → `{ "user": { "id", "email", "displayName" } }` — session cookie is set
+- `401` → invalid email or password
+
+### GET /auth/me
+
+Get the current logged-in user (from session cookie).
+
+- `200` → `{ "user": { "id", "email", "displayName", "stellarPublicKey" } }`
+- `401` → not logged in
+
+### POST /auth/logout
+
+Invalidate the current session.
+
+- `200` → `{ "ok": true }` — session cookie is cleared
+
+### GET /auth/google/start
+
+Start Google OAuth flow. Redirects to Google's authorization endpoint.
+
+### GET /auth/google/callback
+
+Google OAuth callback. Exchanges the authorization code for a token,
+creates/fetches the user, and sets the session cookie.
+
+### POST /auth/stellar/challenge
+
+Request a Stellar signature challenge.
+
+Body: `{ "publicKey": string (required, Stellar address) }`
+
+- `200` → `{ "challenge": string }` — the user signs this with their wallet
+- `400` → invalid Stellar address
+
+### POST /auth/stellar/verify
+
+Verify a Stellar signature and log the user in.
+
+Body: `{ "publicKey": string (required), "signature": string (required), "challenge": string (required) }`
+
+- `200` → `{ "user": { "id", "stellarPublicKey", "displayName" } }` — session cookie is set
+- `400` → invalid signature / expired challenge
+
 ## Ownership
 
 All data is owner-scoped. Requests only see records owned by the
@@ -170,6 +254,75 @@ Returns `{ "activity": ActivityRecord }`.
 
 ## Policy
 
+### `PolicyRules`
+
+`PolicyRules` is the complete policy shape returned by `GET /agents/:id/policy`.
+`PUT /agents/:id/policy` may omit fields: the API validates the supplied values
+and fills omitted fields from `DEFAULT_RULES` before storing them. The
+[policy limits table](security-model.md#spending-limits) summarizes the spending
+limits; the details below define the request fields.
+
+Amounts in `maxTxAmount`, `dailySpendingLimit`, `approvalThreshold`, and
+`requireHumanApprovalForAmountAbove` are JSON strings in the TypeScript type.
+The validator also accepts JSON numbers for these fields. Amounts must be finite;
+`maxTxAmount` entries must be greater than zero, while daily limits and approval
+thresholds may be zero or greater.
+
+| Field | Type | Meaning and format | Default |
+|---|---|---|---|
+| `maxTxAmount` | `Record<string, string>` | Per-transaction maximum, keyed by policy asset identifier. Each configured value must be positive. | `{ "XLM": "100" }` |
+| `dailySpendingLimit` | `Record<string, string>` | Per-agent daily limit, keyed by policy asset identifier. Each value must be non-negative. | `{ "XLM": "500" }` |
+| `allowedAssets` | `string[]` | Asset identifiers permitted by the policy. An empty array disables this allowlist check. | `["XLM"]` |
+| `allowedDestinations` | `string[]` | Payment destination account IDs. Entries must be 56-character strings beginning with `G`; an empty array disables the destination check. | `[]` |
+| `allowedContractIds` | `string[]` | Contract IDs permitted for contract calls. Entries must be non-empty strings; an empty array disables this allowlist check. | `[]` |
+| `txTypeRestrictions` | `Record<string, boolean>` | Supported keys are `payment`, `trustline`, `contract_call`, and `account_settings`. A type is permitted only when its value is `true`; unknown keys are invalid. | `{ "payment": true, "trustline": true, "contract_call": false, "account_settings": false }` |
+| `approvalThreshold` | `string` | Compatibility alias for the human-approval amount gate. If the canonical field below is omitted, normalization uses this value for it. | `"50"` |
+| `requireHumanApprovalForAmountAbove` | `string` | Effective human-approval threshold read by the policy engine. Amounts equal to or greater than this threshold require approval. | `"50"` |
+
+`maxTxAmount` and `dailySpendingLimit` keys, and `allowedAssets` entries, use
+the policy engine's normalized asset names: `XLM` for native XLM and
+`CODE:ISSUER` for an issued asset. This follows the
+[`PaymentAsset` representation](capabilities.md#asset-representation): native
+XLM has no issuer, while an issued asset is identified by its code and issuer.
+For trustline intents, the engine's identifier is
+`trustline:CODE:ISSUER`. When an exact per-asset spending-limit key is absent,
+the engine also supports a `native` fallback key. See
+[`extractAsset` and the policy checks](../packages/policy/src/engine.ts).
+
+`approvalThreshold` is retained as a compatibility alias. Normalization copies
+it to `requireHumanApprovalForAmountAbove` when the latter is omitted, and copies
+the canonical value back when only the canonical field is supplied. If both are
+provided with different values, the engine uses
+`requireHumanApprovalForAmountAbove`; it compares the transaction amount with
+`>=`, so an amount exactly at that effective threshold requires approval. See
+[`normalizePolicyRules`](../packages/policy/src/validation.ts) and the
+[approval check](../packages/policy/src/engine.ts). The zero-value validation
+boundary is tracked separately in [PR #101](https://github.com/naninu123/4evergent/pull/101).
+
+Example complete request body using the defaults:
+
+```json
+{
+  "maxTxAmount": { "XLM": "100" },
+  "dailySpendingLimit": { "XLM": "500" },
+  "allowedAssets": ["XLM"],
+  "allowedDestinations": [],
+  "allowedContractIds": [],
+  "txTypeRestrictions": {
+    "payment": true,
+    "trustline": true,
+    "contract_call": false,
+    "account_settings": false
+  },
+  "approvalThreshold": "50",
+  "requireHumanApprovalForAmountAbove": "50"
+}
+```
+
+The field types and defaults come from [`PolicyRules` and `DEFAULT_RULES`](../packages/policy/src/types.ts);
+the accepted values and the invalid-policy response are defined by
+[`validatePolicyRules`](../packages/policy/src/validation.ts).
+
 ### GET /agents/:id/policy
 
 Get the agent's effective policy rules (owner-scoped). Returns
@@ -262,6 +415,97 @@ Cancel a `queued` or `executing` execution. Requires the queue.
 Queue summary for the caller's executions. Returns
 `{ "running": boolean, "byStatus": Record<string, number> }`.
 `404` with `{"error":"execution queue not enabled"}` if the queue is off.
+
+---
+
+## Dashboard (owner-scoped listing endpoints)
+
+These three endpoints were added as dashboard convenience routes to eliminate
+N+1 fetch patterns. All are owner-scoped: every request must be authenticated
+and only returns data belonging to the authenticated `ownerId`.
+
+### GET /activity
+
+List all activity records across every agent owned by the caller.
+
+**Auth:** required (owner-scoped).
+
+Query parameters:
+
+| Parameter | Default | Max | Description |
+|---|---|---|---|
+| `limit` | `50` | `100` | Maximum number of records to return. Values outside 1–100 are clamped. |
+
+Response `200`:
+
+```json
+{
+  "activity": [ActivityRecord]
+}
+```
+
+`ActivityRecord` fields are defined in `packages/shared/src/types.ts`.
+
+---
+
+### GET /agents/:id/spending
+
+Return the current day's spending breakdown for a single agent,
+computed from the agent's active policy rules and the day's reserved
+spending totals.
+
+**Auth:** required (owner-scoped). `404` if the agent is not found or not
+owned by the caller.
+
+Response `200`:
+
+```json
+{
+  "agentId": "<id>",
+  "spending": {
+    "XLM": {
+      "used": 12.5,
+      "limit": "500",
+      "remaining": 487.5
+    }
+  }
+}
+```
+
+The `spending` value is a `Record<string, { used: number; limit: string; remaining: number }>`.
+Each key is a policy asset identifier (e.g. `XLM`, `CODE:ISSUER`). Only
+assets listed in the agent's `dailySpendingLimit` policy appear in the
+response. `remaining` is clamped to `0` — it will never be negative.
+
+---
+
+### GET /overview/attention
+
+Return headline counters for items that need the owner's attention.
+All counts are owner-scoped — they reflect the authenticated owner's
+data only.
+
+**Auth:** required (owner-scoped).
+
+Response `200`:
+
+```json
+{
+  "pendingApprovals": 3,
+  "failedExecutions": 1,
+  "deadLetterExecutions": 0,
+  "retryingExecutions": 2,
+  "stuckExecutions": 0
+}
+```
+
+| Field | Description |
+|---|---|
+| `pendingApprovals` | Approvals in `pending_approval` state owned by the caller. |
+| `failedExecutions` | Executions in `failed` state. |
+| `deadLetterExecutions` | Executions in `dead_letter` state. |
+| `retryingExecutions` | Executions in `queued` state (awaiting retry). |
+| `stuckExecutions` | Executions in `executing` state (may be hung). |
 
 ---
 
@@ -372,3 +616,18 @@ The dashboard (`apps/web`) is a static Vite SPA. Set `VITE_API_BASE` at build
 time to the API's public origin, and set the API's `CORS_ORIGIN` to the
 frontend's origin. The two are configured independently — the frontend must not
 rely on same-origin `/api` proxying. See `.env.example`.
+### Data retention
+
+The server sweeps expired `auth_sessions` and old `daily_spending` reservations
+once per day by default. Expired session rows are retained for 30 days after
+`expires_at`; spending rows are retained for 90 UTC days. Rows are deleted in
+batches of at most 500 per table, using the expiry and day indexes, so each
+autocommit statement has bounded work and does not hold a long-running write
+transaction. A sweep logs the number removed from each table.
+
+Configure the policy with `AUTH_SESSION_RETENTION_DAYS`,
+`DAILY_SPENDING_RETENTION_DAYS`, and `DATA_RETENTION_INTERVAL_MS`. Set either
+table's day window to `0` to keep its rows forever, or set
+`DATA_RETENTION_ENABLED=0` to disable the worker. Session retention begins
+after expiration; a live session is never removed. Daily-spending rows for the
+cutoff UTC date or newer remain available, including the current day.

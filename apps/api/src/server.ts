@@ -35,6 +35,18 @@ import { createAuthModule } from "./auth.js";
 
 const TESTNET_PASSPHRASE = "Test SDF Network ; September 2015";
 
+function parseRetentionDays(value: string | undefined, fallback: number): number {
+  if (value === undefined || value.trim() === "") return fallback;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+function parseRetentionInterval(value: string | undefined, fallback: number): number {
+  if (value === undefined || value.trim() === "") return fallback;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 function parseApiKeys(envVar: string | undefined): Record<string, { ownerId: string; subject: string }> {
   if (!envVar) return {};
   const keys: Record<string, { ownerId: string; subject: string }> = {};
@@ -192,6 +204,12 @@ async function main() {
       horizonUrl,
       signer,
       dbPath,
+      retention: {
+        enabled: process.env.DATA_RETENTION_ENABLED !== "0",
+        intervalMs: parseRetentionInterval(process.env.DATA_RETENTION_INTERVAL_MS, 24 * 60 * 60_000),
+        authSessionDays: parseRetentionDays(process.env.AUTH_SESSION_RETENTION_DAYS, 30),
+        dailySpendingDays: parseRetentionDays(process.env.DAILY_SPENDING_RETENTION_DAYS, 90),
+      },
       executionQueue: { enabled: true },
       reconciliation: { enabled: true },
       authProvider,

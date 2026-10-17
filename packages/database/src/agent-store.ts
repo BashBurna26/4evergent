@@ -1,5 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
 import type { Agent } from "@4evergent/shared";
+import { getSharedConnection } from "./shared-connection.js";
 import type { AgentStore, CreateAgentInput } from "./agent-types.js";
 
 const MAX_LIMIT = 200;
@@ -89,14 +90,13 @@ export class SQLiteAgentStore implements AgentStore {
   private db: DatabaseSync;
 
   constructor(dbPath: string) {
-    this.db = new DatabaseSync(dbPath);
+    this.db = getSharedConnection(dbPath);
     this.initSchema();
   }
 
   private initSchema(): void {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS _meta (key TEXT PRIMARY KEY, value TEXT);
-      INSERT OR IGNORE INTO _meta (key, value) VALUES ('schema_version', '1');
 
       CREATE TABLE IF NOT EXISTS agents (
         id TEXT PRIMARY KEY,
@@ -215,7 +215,7 @@ export class SQLiteAgentStore implements AgentStore {
   }
 
   close(): void {
-    this.db.close();
+    // Shared connection — managed by closeSharedConnection() / closeAllSharedConnections()
   }
 }
 

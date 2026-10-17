@@ -118,3 +118,13 @@ All decisions recorded via the ADR-lite convention. Each entry: **Status | Conte
 - Backward compatible: existing test helpers using `registerAgent()` still work
 - No production authentication — `requestContext.ownerId` is set server-side (existing limitation)
 - `AgentRecord` has no secret fields by construction
+
+## ADR-014: Bounded retention sweeps for transient data
+
+**Status:** Accepted
+
+**Context:** Expired authentication sessions and historical daily-spending reservations accumulated indefinitely. The former exposed stale tokens in storage; the latter had no readers once its UTC day passed. Cleanup must not starve request traffic.
+
+**Decision:** Sweep sessions 30 days after `expires_at` and daily-spending rows older than 90 UTC days, once per day. Each indexed delete is limited to 500 rows per table and runs as a short autocommit statement. Operators can set the two retention-day environment variables, change the interval, disable the worker, or set either day window to zero to retain that table forever. The idempotency table remains outside this policy and belongs to #109.
+
+**Consequences:** Transient storage is bounded over repeated sweeps without a schema migration or a long-held write transaction. A large backlog drains in batches. Recent expired sessions and the current spending day remain available; setting a zero window explicitly keeps all rows.

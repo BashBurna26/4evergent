@@ -234,6 +234,28 @@ class SessionStore {
     if (this.db) this.db.prepare("DELETE FROM auth_sessions WHERE token = ?").run(token);
     else this.map.delete(token);
   }
+
+  deleteExpiredBefore(cutoff: number, limit = 500): number {
+    if (!Number.isFinite(cutoff) || !Number.isInteger(limit) || limit <= 0) return 0;
+    if (this.db) {
+      const result = this.db.prepare(`
+        DELETE FROM auth_sessions
+        WHERE token IN (
+          SELECT token FROM auth_sessions WHERE expires_at <= ? ORDER BY expires_at ASC LIMIT ?
+        )
+      `).run(cutoff, limit);
+      return Number(result.changes);
+    }
+    let removed = 0;
+    for (const [token, session] of this.map) {
+      if (session.expiresAt <= cutoff) {
+        this.map.delete(token);
+        removed++;
+        if (removed >= limit) break;
+      }
+    }
+    return removed;
+  }
 }
 
 /* --------------------------------------------------------------- utilities */
@@ -306,6 +328,8 @@ export interface AuthModule {
   handleRoutes(req: any, res: any, url: string, method: string): Promise<boolean>;
   /** Direct session lookup for /auth/me. */
   sessionFor(req: { headers: Record<string, string | string[] | undefined> }): SessionRecord | null;
+  /** Remove up to `limit` sessions whose expiration is at/before cutoff. */
+  sweepExpiredSessions(cutoff: number, limit?: number): number;
   configStatus(): { email: boolean; google: boolean; stellar: boolean; registration: boolean };
 }
 
@@ -742,5 +766,11 @@ export function createAuthModule(opts: {
     };
   }
 
-  return { authenticate, handleRoutes, sessionFor, configStatus };
+  return {
+    authenticate,
+    handleRoutes,
+    sessionFor,
+    configStatus,
+    sweepExpiredSessions: (cutoff: number, limit?: number) => sessions.deleteExpiredBefore(cutoff, limit),
+  };
 }

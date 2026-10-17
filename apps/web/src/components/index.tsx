@@ -273,6 +273,57 @@ export function IntentAmount({ intent }: { intent: { type: string; amount?: stri
 }
 
 /* ==========================================================================
+   Button
+   ========================================================================== */
+
+export function Button({
+  children,
+  onClick,
+  disabled = false,
+  variant = 'primary',
+  type = 'button',
+}: {
+  children: React.ReactNode;
+  onClick?: () => void;
+  disabled?: boolean;
+  variant?: 'primary' | 'secondary' | 'danger';
+  type?: 'button' | 'submit';
+}) {
+  const cls = variant === 'secondary' ? 'btn-secondary' : variant === 'danger' ? 'btn-danger' : 'btn-primary';
+  return (
+    <button type={type} className={cls} onClick={onClick} disabled={disabled}>
+      {children}
+    </button>
+  );
+}
+
+/* ==========================================================================
+   PaginationFooter
+   ========================================================================== */
+
+export function PaginationFooter({
+  hasMore,
+  loadingMore,
+  onLoadMore,
+  itemCount,
+}: {
+  hasMore: boolean;
+  loadingMore: boolean;
+  onLoadMore: () => void;
+  itemCount: number;
+}) {
+  if (!hasMore) return null;
+  return (
+    <div className="pagination-footer">
+      <span className="muted">{itemCount} shown</span>
+      <Button onClick={onLoadMore} disabled={loadingMore} variant="secondary">
+        {loadingMore ? 'Loading…' : 'Load more'}
+      </Button>
+    </div>
+  );
+}
+
+/* ==========================================================================
    Re-exports
    ========================================================================== */
 

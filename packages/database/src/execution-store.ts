@@ -1,5 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import type { ExecutionStore, ExecutionRecord, ExecutionStatus } from "./execution-types.js";
+import { getSharedConnection } from "./shared-connection.js";
+import { clampOffset, clampLimit } from "./pagination.js";
 
 const MAX_LIMIT = 200;
 
@@ -36,18 +38,20 @@ export class InMemoryExecutionStore implements ExecutionStore {
       .slice(0, Math.max(1, Math.min(limit, MAX_LIMIT)));
   }
 
-  async listByOwner(ownerId: string, limit = MAX_LIMIT): Promise<ExecutionRecord[]> {
+  async listByOwner(ownerId: string, limit = MAX_LIMIT, offset = 0): Promise<ExecutionRecord[]> {
+    const safeOffset = clampOffset(offset);
     return [...this.records.values()]
       .filter((r) => r.ownerId === ownerId)
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-      .slice(0, Math.max(1, Math.min(limit, MAX_LIMIT)));
+      .slice(safeOffset, safeOffset + clampLimit(limit, MAX_LIMIT));
   }
 
-  async listByAgent(agentId: string, limit = MAX_LIMIT): Promise<ExecutionRecord[]> {
+  async listByAgent(agentId: string, limit = MAX_LIMIT, offset = 0): Promise<ExecutionRecord[]> {
+    const safeOffset = clampOffset(offset);
     return [...this.records.values()]
       .filter((r) => r.agentId === agentId)
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-      .slice(0, Math.max(1, Math.min(limit, MAX_LIMIT)));
+      .slice(safeOffset, safeOffset + clampLimit(limit, MAX_LIMIT));
   }
 
   async listStuckExecuting(limit = MAX_LIMIT): Promise<ExecutionRecord[]> {
@@ -133,14 +137,13 @@ export class SQLiteExecutionStore implements ExecutionStore {
   private db: DatabaseSync;
 
   constructor(dbPath: string) {
-    this.db = new DatabaseSync(dbPath);
+    this.db = getSharedConnection(dbPath);
     this.initSchema();
   }
 
   private initSchema(): void {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS _meta (key TEXT PRIMARY KEY, value TEXT);
-      INSERT OR IGNORE INTO _meta (key, value) VALUES ('schema_version', '1');
 
       CREATE TABLE IF NOT EXISTS executions (
         id TEXT PRIMARY KEY,
@@ -237,19 +240,21 @@ export class SQLiteExecutionStore implements ExecutionStore {
     return rows.map(rowToExecutionRecord);
   }
 
-  async listByOwner(ownerId: string, limit = MAX_LIMIT): Promise<ExecutionRecord[]> {
-    const safeLimit = Math.max(1, Math.min(limit, MAX_LIMIT));
+  async listByOwner(ownerId: string, limit = MAX_LIMIT, offset = 0): Promise<ExecutionRecord[]> {
+    const safeLimit = clampLimit(limit, MAX_LIMIT);
+    const safeOffset = clampOffset(offset);
     const rows = this.db
-      .prepare("SELECT * FROM executions WHERE owner_id = ? ORDER BY updated_at DESC LIMIT ?")
-      .all(ownerId, safeLimit) as unknown as ExecutionRow[];
+      .prepare("SELECT * FROM executions WHERE owner_id = ? ORDER BY updated_at DESC LIMIT ? OFFSET ?")
+      .all(ownerId, safeLimit, safeOffset) as unknown as ExecutionRow[];
     return rows.map(rowToExecutionRecord);
   }
 
-  async listByAgent(agentId: string, limit = MAX_LIMIT): Promise<ExecutionRecord[]> {
-    const safeLimit = Math.max(1, Math.min(limit, MAX_LIMIT));
+  async listByAgent(agentId: string, limit = MAX_LIMIT, offset = 0): Promise<ExecutionRecord[]> {
+    const safeLimit = clampLimit(limit, MAX_LIMIT);
+    const safeOffset = clampOffset(offset);
     const rows = this.db
-      .prepare("SELECT * FROM executions WHERE agent_id = ? ORDER BY updated_at DESC LIMIT ?")
-      .all(agentId, safeLimit) as unknown as ExecutionRow[];
+      .prepare("SELECT * FROM executions WHERE agent_id = ? ORDER BY updated_at DESC LIMIT ? OFFSET ?")
+      .all(agentId, safeLimit, safeOffset) as unknown as ExecutionRow[];
     return rows.map(rowToExecutionRecord);
   }
 
@@ -372,7 +377,7 @@ export class SQLiteExecutionStore implements ExecutionStore {
   }
 
   close(): void {
-    this.db.close();
+    // Shared connection — managed by closeSharedConnection() / closeAllSharedConnections()
   }
 }
 

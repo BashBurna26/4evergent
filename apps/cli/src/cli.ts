@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 /**
  * 4evergent Operator CLI — HTTP client for the 4evergent API.
  *
@@ -8,6 +9,7 @@
  * Configuration:
  *   FOREGENT_API_URL  — API base URL (default: http://127.0.0.1:3000)
  *   FOREGENT_API_KEY  — Bearer API key (production auth mode)
+ *   FOREGENT_API_TIMEOUT_MS — Per-request timeout in ms (default: 5000)
  */
 
 import { exit } from "node:process";
@@ -19,10 +21,49 @@ const VERSION: string = createRequire(import.meta.url)("../package.json").versio
 const API_URL = process.env.FOREGENT_API_URL ?? "http://127.0.0.1:3000";
 const API_KEY = process.env.FOREGENT_API_KEY;
 
+// Every request is bounded by a finite deadline so an unresponsive server can
+// never hang the caller's shell. Override per invocation with
+// FOREGENT_API_TIMEOUT_MS (positive integer, milliseconds).
+const DEFAULT_API_TIMEOUT_MS = 5000;
+// Non-zero exit reserved for the timeout failure mode, so scripts can tell
+// "server too slow" (3) apart from "server down" and "server said no" (1).
+const EXIT_TIMEOUT = 3;
+// AbortSignal.timeout() rejects delays above this bound.
+const MAX_API_TIMEOUT_MS = 2 ** 31 - 1;
+
+function resolveApiTimeoutMs(raw: string | undefined): number {
+  if (raw === undefined || raw.trim() === "") return DEFAULT_API_TIMEOUT_MS;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed <= 0 || parsed > MAX_API_TIMEOUT_MS) {
+    console.error(
+      `Ignoring invalid FOREGENT_API_TIMEOUT_MS='${raw}' ` +
+        `(expected a positive integer <= ${MAX_API_TIMEOUT_MS}); using default ${DEFAULT_API_TIMEOUT_MS}ms.`
+    );
+    return DEFAULT_API_TIMEOUT_MS;
+  }
+  return parsed;
+}
+
+const API_TIMEOUT_MS = resolveApiTimeoutMs(process.env.FOREGENT_API_TIMEOUT_MS);
+
+// Set when a request fails because the deadline elapsed. The exit code is
+// mapped to EXIT_TIMEOUT at the single exit point, so every command inherits
+// the documented timeout exit code without duplicating it in each catch block.
+let requestTimedOut = false;
+
 class ApiError extends Error {
   constructor(public status: number, message: string) {
-    super(`HTTP ${status}: ${message}`);
+    // status 0 means "no HTTP response" (connection failure or timeout);
+    // prefixing it with "HTTP 0:" would be misleading.
+    super(status === 0 ? message : `HTTP ${status}: ${message}`);
     this.name = "ApiError";
+  }
+}
+
+class TimeoutError extends ApiError {
+  constructor(message: string) {
+    super(0, message);
+    this.name = "TimeoutError";
   }
 }
 
@@ -41,12 +82,27 @@ async function request(path: string, init: RequestInit = {}): Promise<ApiRespons
   }
 
   let res: Response;
+  const signal = AbortSignal.timeout(API_TIMEOUT_MS);
   try {
     res = await fetch(`${API_URL}${path}`, {
       ...init,
       headers,
+      // Bounds this HTTP request (headers and body). Once the response has
+      // been received, no deadline applies to printing or further processing.
+      signal,
     });
   } catch (err: any) {
+    // Our signal aborts only on timeout. Checking it as well as the error name
+    // keeps the classification correct when fetch wraps the abort reason
+    // (e.g. an abort raised during the connect phase).
+    if (signal.aborted || err?.name === "TimeoutError" || err?.name === "AbortError") {
+      requestTimedOut = true;
+      throw new TimeoutError(
+        `Request timed out after ${API_TIMEOUT_MS}ms: ${init.method ?? "GET"} ${API_URL}${path}. ` +
+          `The server accepted the connection but did not respond in time. ` +
+          `Set FOREGENT_API_TIMEOUT_MS to change the deadline; the CLI does not retry automatically.`
+      );
+    }
     if (err.cause?.code === "ECONNREFUSED" || err.cause?.code === "ENOTFOUND" || err.code === "ECONNREFUSED") {
       throw new ApiError(0, `Cannot connect to API at ${API_URL}. Is the server running?`);
     }
@@ -99,14 +155,21 @@ function formatExecution(e: any) {
 }
 
 function _formatApproval(a: any) {
+  const intent = a.intent ?? {};
+  const rule = a.policyDecision?.rule ?? a.policyRule ?? a.rule ?? "-";
   return `Approval:
-  ID:           ${a.id}
-  Agent:        ${a.agentId}
-  Activity:     ${a.activityId ?? "-"}
-  Status:       ${a.status}
-  Created:      ${a.createdAt ?? "-"}
-  Expires:      ${a.expiresAt ?? "-"}
-  Approver:     ${a.approver ?? "-"}
+  ID:            ${a.id}
+  Status:        ${a.status}
+  Agent:         ${a.agentId ?? "-"}
+  Intent Type:   ${intent.type ?? "-"}
+  Amount:        ${intent.amount ?? "-"} ${intent.asset ?? intent.assetCode ?? ""}
+  Destination:   ${intent.destination ?? intent.contractId ?? "-"}
+  Policy Rule:   ${rule}
+  Requester:     ${a.requesterId ?? a.requestedBy ?? "-"}
+  Approver:      ${a.approverId ?? a.approvedBy ?? "-"}
+  Expires:       ${a.expiresAt ?? "-"}
+  Activity:      ${a.activityId ?? "-"}
+  Created:       ${a.createdAt ?? "-"}
 `;
 }
 
@@ -249,6 +312,21 @@ async function cmdExecutionGet(executionId: string) {
   }
 }
 
+async function cmdApprovalGet(approvalId: string) {
+  if (!approvalId) {
+    console.error("Usage: 4evergent approval get <id>");
+    return 1;
+  }
+  try {
+    const { body } = await request(`/approvals/${encodeURIComponent(approvalId)}`);
+    console.log(_formatApproval(body.approval ?? body));
+    return 0;
+  } catch (err: any) {
+    console.error(`Error: ${err.message}`);
+    return 1;
+  }
+}
+
 async function cmdExecutionRetry(executionId: string) {
   if (!executionId) {
     console.error("Usage: 4evergent execution retry <id>");
@@ -306,7 +384,7 @@ function formatPolicy(p: any) {
 `;
 }
 
-function _formatActivity(a: any) {
+function formatActivity(a: any) {
   return `Activity:
   ID:           ${a.id}
   Agent:        ${a.agentId}
@@ -443,6 +521,23 @@ async function cmdActivityList(agentId: string, limit: string) {
     for (const a of activity) {
       console.log(`${a.id.slice(0, 18)}\t${a.agentId.slice(0, 12)}\t${a.intent?.type ?? "-"}\t${a.status}\t${new Date(a.createdAt).toLocaleString()}`);
     }
+    return 0;
+  } catch (err: any) {
+    console.error(`Error: ${err.message}`);
+    return 1;
+  }
+}
+
+async function cmdActivityGet(agentId: string, activityId: string) {
+  if (!agentId || !activityId) {
+    console.error("Usage: 4evergent activity get <agent-id> <activity-id>");
+    return 1;
+  }
+  try {
+    const { body } = await request(
+      `/agents/${encodeURIComponent(agentId)}/activity/${encodeURIComponent(activityId)}`,
+    );
+    console.log(formatActivity(body.activity));
     return 0;
   } catch (err: any) {
     console.error(`Error: ${err.message}`);
@@ -763,7 +858,7 @@ const COMMANDS_HELP = [
   "  approval list | approve <id> | reject <id>",
   "  execution list | get <id> | retry <id> | cancel <id>",
   "  policy get <agent-id> | update <agent-id>",
-  "  activity list <agent-id> [limit]",
+  "  activity list <agent-id> [limit] | get <agent-id> <activity-id>",
   "  schedule list <agent-id> [limit] | get <agent-id> <schedule-id> | create <agent-id> <cron> <intent> | update <agent-id> <schedule-id> <cron> | pause <agent-id> <schedule-id> | resume <agent-id> <schedule-id> | disable <agent-id> <schedule-id> | delete <agent-id> <schedule-id>",
   "  intent submit <agent-id> <type> [args...] [--idempotency-key <key>]",
 ].join("\n");
@@ -801,11 +896,12 @@ async function main(): Promise<number> {
     case "approval":
       switch (sub) {
         case "list": return cmdApprovalList();
+        case "get": return cmdApprovalGet(argv[2] ?? "");
         case "approve": return cmdApprovalAction(argv[2] ?? "", "approve");
         case "reject": return cmdApprovalAction(argv[2] ?? "", "reject");
         default:
           console.error(`Unknown approval subcommand: ${sub}`);
-          console.error("Usage: 4evergent approval <list|approve|reject> [id]");
+          console.error("Usage: 4evergent approval <list|get|approve|reject> [id]");
           return 1;
       }
     case "execution":
@@ -830,8 +926,9 @@ async function main(): Promise<number> {
     case "activity":
       switch (sub) {
         case "list": return cmdActivityList(argv[2] ?? "", argv[3] ?? "");
+        case "get": return cmdActivityGet(argv[2] ?? "", argv[3] ?? "");
         default:
-          console.error("Usage: 4evergent activity list <agent-id> [limit]");
+          console.error("Usage: 4evergent activity <list <agent-id> [limit] | get <agent-id> <activity-id>>");
           return 1;
       }
     case "schedule":
@@ -867,7 +964,7 @@ async function main(): Promise<number> {
   }
 }
 
-main().then((code) => exit(code)).catch((err) => {
+main().then((code) => exit(requestTimedOut ? EXIT_TIMEOUT : code)).catch((err) => {
   console.error(`Fatal: ${err.message}`);
-  exit(1);
+  exit(requestTimedOut ? EXIT_TIMEOUT : 1);
 });

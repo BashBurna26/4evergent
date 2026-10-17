@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api';
 import type { ExecutionRecord, QueueSummary, ExecutionStatus } from '../types';
+import { PaginationFooter } from '../components';
 
 type StatusFilter = 'all' | ExecutionStatus;
 
@@ -14,6 +15,8 @@ const FILTER_OPTIONS: { value: StatusFilter; label: string }[] = [
   { value: 'failed', label: 'Failed' },
   { value: 'dead_letter', label: 'Dead Letter' },
 ];
+
+const PAGE_SIZE = 50;
 
 function statusLabel(status: ExecutionStatus): string {
   switch (status) {
@@ -43,27 +46,51 @@ function inferRetrying(e: ExecutionRecord): boolean {
 
 export default function Executions({ onExecutionClick }: { onExecutionClick?: (id: string) => void }) {
   const [executions, setExecutions] = useState<ExecutionRecord[] | null>(null);
+  const [hasMore, setHasMore] = useState(false);
+  const [nextOffset, setNextOffset] = useState(0);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [queue, setQueue] = useState<QueueSummary | null>(null);
   const [filter, setFilter] = useState<StatusFilter>('all');
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    (async () => {
-      try {
-        const [list, q] = await Promise.all([
-          api.listAllExecutions(),
-          api.getQueueStatus(),
-        ]);
-        setExecutions(list.executions);
-        setQueue(q);
-      } catch (e: any) {
-        setError(e.message ?? 'Failed to load executions');
-      } finally {
-        setLoading(false);
-      }
-    })();
+  const loadPage = useCallback(async (offset: number, replace: boolean) => {
+    try {
+      const r = await api.listAllExecutions(PAGE_SIZE, offset);
+      setExecutions(replace ? r.executions : (prev) => (prev ?? []).concat(r.executions));
+      setHasMore(r.hasMore);
+      setNextOffset(offset + r.executions.length);
+    } catch (e: any) {
+      setError(e.message ?? 'Failed to load executions');
+    }
   }, []);
+
+  const loadInitial = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [r, q] = await Promise.all([
+        api.listAllExecutions(PAGE_SIZE, 0),
+        api.getQueueStatus(),
+      ]);
+      setExecutions(r.executions);
+      setHasMore(r.hasMore);
+      setNextOffset(r.executions.length);
+      setQueue(q);
+    } catch (e: any) {
+      setError(e.message ?? 'Failed to load executions');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const loadMore = () => {
+    setLoadingMore(true);
+    loadPage(nextOffset, false).finally(() => setLoadingMore(false));
+  };
+
+  useEffect(() => {
+    loadInitial();
+  }, [loadInitial]);
 
   if (loading) return <Skeleton label="Loading executions..." />;
   if (error) return <EmptyState title="Failed to load executions" message={error} />;
@@ -158,6 +185,8 @@ export default function Executions({ onExecutionClick }: { onExecutionClick?: (i
           </table>
         </div>
       )}
+
+      <PaginationFooter hasMore={hasMore} loadingMore={loadingMore} onLoadMore={loadMore} itemCount={executions.length} />
     </section>
   );
 }

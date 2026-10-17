@@ -150,10 +150,26 @@ node apps/api/dist/server.js
 
 The server starts on `http://localhost:3000`. See [docs/testnet.md](docs/testnet.md) for the full Testnet workflow including funding, simulation, and live submission (`LIVE_SUBMIT=1`).
 
+### Watch the API server (edit → reload)
+
+For development, run the API server from source with a file watcher so edits restart the server automatically — no manual rebuild/restart:
+
+```bash
+# one-time: build the workspace packages the API imports
+pnpm build
+
+# start the API server in watch mode (reloads on source changes)
+pnpm --filter @4evergent/api dev
+# or, from the repo root:
+pnpm dev:watch
+```
+
+`pnpm --filter @4evergent/api dev` runs `tsx watch` against `apps/api/src/server.ts`, so the API restart is driven by source changes (equivalent to editing → rebuilding → restarting, but automatic). The script runs the API from source and therefore does **not** require `apps/api` to be built first, but the workspace packages it imports (`@4evergent/shared`, `@4evergent/agent-core`, `@4evergent/policy`, `@4evergent/stellar`, `@4evergent/database`) are resolved from their compiled `dist/` output — run `pnpm build` once first (or `pnpm dev`, which recompiles those packages in watch mode). Like `start`, the watch script loads `.env` from the repo root when present via `--env-file-if-exists`.
+
 ### Run the dashboard
 
 ```bash
-# terminal 1: start the API server
+# terminal 1: start the API server in watch mode (see above)
 pnpm --filter @4evergent/api dev
 
 # terminal 2: start the web dashboard
@@ -218,16 +234,22 @@ The `4evergent` CLI is an operator client that talks HTTP to the API server.
 It does NOT sign, build, or submit Stellar transactions — all transaction
 work stays server-side.
 
-```bash
-# Build and run (from repo root)
-pnpm --filter @4evergent/cli build
-npx tsx apps/cli/src/cli.ts health
+Install the published command with:
 
-# Configure
+```bash
+npm install --global @4evergent/cli
+```
+
+Configure `FOREGENT_API_URL` and, when using production authentication,
+`FOREGENT_API_KEY` in the shell where you run the command. See
+[the CLI guide](docs/cli.md) for configuration and available commands.
+
+```bash
+# Configure the API connection in the shell where you run the CLI
 export FOREGENT_API_URL=http://localhost:3000
 export FOREGENT_API_KEY=your-api-key
 
-# Usage
+# Use the installed command
 4evergent health
 4evergent agent list
 4evergent agent pause <id>
@@ -238,6 +260,13 @@ export FOREGENT_API_KEY=your-api-key
 4evergent activity list <agent-id>
 4evergent schedule list <agent-id>
 4evergent intent submit <agent-id> <type> [args...]
+```
+
+To run the source version from a repository checkout:
+
+```bash
+pnpm --filter @4evergent/cli build
+npx tsx apps/cli/src/cli.ts health
 ```
 
 See [docs/cli.md](docs/cli.md) for full command reference.

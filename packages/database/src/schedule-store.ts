@@ -1,6 +1,8 @@
 import { DatabaseSync } from "node:sqlite";
 import type { AgentIntent } from "@4evergent/shared";
 import type { ScheduleStore, ScheduleRecord } from "./schedule-types.js";
+import { getSharedConnection } from "./shared-connection.js";
+import { clampOffset, clampLimit } from "./pagination.js";
 
 /**
  * InMemoryScheduleStore — process-local schedule log.
@@ -19,18 +21,20 @@ export class InMemoryScheduleStore implements ScheduleStore {
     return this.records.get(id) ?? null;
   }
 
-  async listByAgent(agentId: string, limit = 50): Promise<ScheduleRecord[]> {
+  async listByAgent(agentId: string, limit = 50, offset = 0): Promise<ScheduleRecord[]> {
+    const safeOffset = clampOffset(offset);
     return [...this.records.values()]
       .filter((r) => r.agentId === agentId)
       .sort((a, b) => a.nextRunAt.localeCompare(b.nextRunAt))
-      .slice(0, limit);
+      .slice(safeOffset, safeOffset + clampLimit(limit));
   }
 
-  async listByOwner(ownerId: string, limit = 50): Promise<ScheduleRecord[]> {
+  async listByOwner(ownerId: string, limit = 50, offset = 0): Promise<ScheduleRecord[]> {
+    const safeOffset = clampOffset(offset);
     return [...this.records.values()]
       .filter((r) => r.ownerId === ownerId)
       .sort((a, b) => a.nextRunAt.localeCompare(b.nextRunAt))
-      .slice(0, limit);
+      .slice(safeOffset, safeOffset + clampLimit(limit));
   }
 
   async listDue(before: string, limit = 50): Promise<ScheduleRecord[]> {
@@ -81,14 +85,13 @@ export class SQLiteScheduleStore implements ScheduleStore {
   private db: DatabaseSync;
 
   constructor(dbPath: string) {
-    this.db = new DatabaseSync(dbPath);
+    this.db = getSharedConnection(dbPath);
     this.initSchema();
   }
 
   private initSchema(): void {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS _meta (key TEXT PRIMARY KEY, value TEXT);
-      INSERT OR IGNORE INTO _meta (key, value) VALUES ('schema_version', '3');
 
       CREATE TABLE IF NOT EXISTS schedules (
         id TEXT PRIMARY KEY,
@@ -139,17 +142,17 @@ export class SQLiteScheduleStore implements ScheduleStore {
     return row ? rowToScheduleRecord(row) : null;
   }
 
-  async listByAgent(agentId: string, limit = 50): Promise<ScheduleRecord[]> {
+  async listByAgent(agentId: string, limit = 50, offset = 0): Promise<ScheduleRecord[]> {
     const rows = this.db
-      .prepare("SELECT * FROM schedules WHERE agent_id = ? ORDER BY next_run_at ASC LIMIT ?")
-      .all(agentId, limit) as unknown as ScheduleRow[];
+      .prepare("SELECT * FROM schedules WHERE agent_id = ? ORDER BY next_run_at ASC LIMIT ? OFFSET ?")
+      .all(agentId, clampLimit(limit), clampOffset(offset)) as unknown as ScheduleRow[];
     return rows.map((r) => rowToScheduleRecord(r));
   }
 
-  async listByOwner(ownerId: string, limit = 50): Promise<ScheduleRecord[]> {
+  async listByOwner(ownerId: string, limit = 50, offset = 0): Promise<ScheduleRecord[]> {
     const rows = this.db
-      .prepare("SELECT * FROM schedules WHERE owner_id = ? ORDER BY next_run_at ASC LIMIT ?")
-      .all(ownerId, limit) as unknown as ScheduleRow[];
+      .prepare("SELECT * FROM schedules WHERE owner_id = ? ORDER BY next_run_at ASC LIMIT ? OFFSET ?")
+      .all(ownerId, clampLimit(limit), clampOffset(offset)) as unknown as ScheduleRow[];
     return rows.map((r) => rowToScheduleRecord(r));
   }
 
@@ -195,7 +198,7 @@ export class SQLiteScheduleStore implements ScheduleStore {
   }
 
   close(): void {
-    this.db.close();
+    // Shared connection — managed by closeSharedConnection() / closeAllSharedConnections()
   }
 }
 
