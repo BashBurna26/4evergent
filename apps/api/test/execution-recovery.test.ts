@@ -189,7 +189,7 @@ test("POST /executions/:id/cancel — queued → cancelled", async () => {
   }
 });
 
-test("POST /executions/:id/cancel — executing → cancelled", async () => {
+test("POST /executions/:id/cancel — rejects executing record when no local in-flight entry exists", async () => {
   const { baseUrl, close, executionStore } = await startServer();
   try {
     const execution = makeExecution({ status: "executing", attempt: 1 });
@@ -200,9 +200,11 @@ test("POST /executions/:id/cancel — executing → cancelled", async () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({}),
     });
-    assert.equal(res.status, 200);
+    assert.equal(res.status, 409);
     const body = await res.json();
-    assert.equal(body.execution.status, "cancelled");
+    assert.match(body.error, /not actively running on this worker/i);
+    const stored = await executionStore.get(execution.id);
+    assert.equal(stored?.status, "executing", "status must remain executing and not falsely imply cancellation");
   } finally {
     await close();
   }

@@ -184,18 +184,38 @@ export class ExecutionQueue {
   /**
    * Manual cancellation — transitions queued/executing to cancelled.
    * Uses atomic conditional update to prevent race with worker.
+   *
+   * Supported Worker Model:
+   * - "queued": Can be safely cancelled before execution starts. An atomic
+   *   conditional update transitions it to "cancelled", ensuring no worker
+   *   can claim it.
+   * - "executing": Can ONLY be cancelled by the specific ExecutionQueue instance
+   *   currently executing it (holding the active inFlight controller). In a
+   *   multi-instance deployment or if no local in-flight entry exists,
+   *   cancellation is rejected ("invalid_state" with reason "not_in_flight")
+   *   because this instance cannot abort the remote worker's pipeline, and
+   *   marking it cancelled would falsely imply transaction submission was
+   *   prevented.
+   * - "submitting" / "submitted": Once an in-flight execution enters the
+   *   transaction submission phase, cancellation is rejected ("invalid_state"
+   *   with reason "submitting").
    */
-  async cancel(id: string): Promise<{ status: string; execution?: ExecutionRecord }> {
+  async cancel(
+    id: string
+  ): Promise<{ status: string; reason?: string; execution?: ExecutionRecord }> {
     const existing = await this.store.get(id);
     if (!existing) return { status: "not_found" };
     if (existing.status !== "queued" && existing.status !== "executing") {
       return { status: "invalid_state" };
     }
 
-    const inFlightRun = this.inFlight.get(id);
-    if (inFlightRun) {
+    if (existing.status === "executing") {
+      const inFlightRun = this.inFlight.get(id);
+      if (!inFlightRun) {
+        return { status: "invalid_state", reason: "not_in_flight" };
+      }
       if (inFlightRun.phase === "submitting" || inFlightRun.phase === "submitted") {
-        return { status: "invalid_state" };
+        return { status: "invalid_state", reason: "submitting" };
       }
       inFlightRun.controller.abort();
     }
@@ -266,7 +286,7 @@ export class ExecutionQueue {
       await this.complete(record, result);
       return true;
     } catch (err) {
-      if (controller.signal.aborted || isAbortError(err)) {
+      if (controller.signal.aborted) {
         return true;
       }
       // Classify the error (transient vs permanent) for retry decision
@@ -475,17 +495,5 @@ function shouldRetryNow(
     return { shouldRetry: false, nextRetryAt: null };
   }
   return { shouldRetry: true, nextRetryAt: computeNextRetryAt(attempt, policy, now()) };
-}
-
-function isAbortError(err: unknown): boolean {
-  if (!err) return false;
-  if (err instanceof Error) {
-    return (
-      err.name === "AbortError" ||
-      err.message.toLowerCase().includes("cancelled") ||
-      err.message.toLowerCase().includes("aborted")
-    );
-  }
-  return false;
 }
 

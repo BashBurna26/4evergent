@@ -338,7 +338,7 @@ export async function createApiServer(options: ServerOptions) {
             activityId: (outcome as { activityId?: string }).activityId ?? record.activityId ?? undefined,
           };
         } catch (err: unknown) {
-          if (context?.signal?.aborted || (err instanceof Error && err.name === "AbortError")) {
+          if (context?.signal?.aborted) {
             if (record.activityId && options.activityStore) {
               try {
                 await options.activityStore.update(record.activityId, {
@@ -1327,9 +1327,14 @@ export async function createApiServer(options: ServerOptions) {
     if (result.status === "invalid_state") {
       const current = await executionStore.get(executionId);
       const currentStatus = current?.status ?? execution.status;
-      const msg = currentStatus !== "executing"
-        ? `cannot cancel execution in status '${currentStatus}'`
-        : "cannot cancel execution: pipeline has already begun submitting transaction";
+      let msg: string;
+      if (currentStatus !== "executing") {
+        msg = `cannot cancel execution in status '${currentStatus}'`;
+      } else if (result.reason === "not_in_flight") {
+        msg = "cannot cancel execution: execution is not actively running on this worker";
+      } else {
+        msg = "cannot cancel execution: pipeline has already begun submitting transaction";
+      }
       return json(res, { error: msg }, 409);
     }
     if (result.status === "conflict") return json(res, { error: "execution state changed; please refresh" }, 409);

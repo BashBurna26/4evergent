@@ -440,16 +440,31 @@ test("ExecutionQueue.cancel: rejects cancellation once execution has entered non
   assert.equal(stored?.txHash, "tx-committed-456");
 });
 
-test("ExecutionQueue.cancel: executing → cancelled", async () => {
+test("ExecutionQueue.cancel: queued → cancelled", async () => {
   const store = new InMemoryExecutionStore();
   const queue = new ExecutionQueue(store, async (rec) => ({ record: rec, success: true }));
-  const execution = makeExecution({ status: "executing", startedAt: "2026-01-01T00:00:00Z" });
+  const execution = makeExecution({ status: "queued" });
   await store.record(execution);
 
   const res = await queue.cancel(execution.id);
   assert.equal(res.status, "cancelled");
   assert.equal(res.execution?.status, "cancelled");
   assert.equal(res.execution?.error, "cancelled by user");
+  const stored = await store.get(execution.id);
+  assert.equal(stored?.status, "cancelled");
+});
+
+test("ExecutionQueue.cancel: executing record without local in-flight entry is rejected", async () => {
+  const store = new InMemoryExecutionStore();
+  const queue = new ExecutionQueue(store, async (rec) => ({ record: rec, success: true }));
+  const execution = makeExecution({ status: "executing", startedAt: "2026-01-01T00:00:00Z" });
+  await store.record(execution);
+
+  const res = await queue.cancel(execution.id);
+  assert.equal(res.status, "invalid_state");
+  assert.equal(res.reason, "not_in_flight");
+  const stored = await store.get(execution.id);
+  assert.equal(stored?.status, "executing", "status must remain executing and not falsely imply cancellation");
 });
 
 test("ExecutionQueue.cancel: rejects non-cancellable states and nonexistent ids", async () => {
@@ -496,5 +511,69 @@ test("ExecutionQueue.retry: explicitly rejects cancelled execution", async () =>
   assert.equal(res.status, "invalid_state");
   const stored = await store.get(execution.id);
   assert.equal(stored?.status, "cancelled");
+});
+
+test("ExecutionQueue: unrelated error containing 'cancelled' or 'aborted' follows normal failure path and is not swallowed", async () => {
+  const store = new InMemoryExecutionStore();
+  let executed = false;
+  const queue = new ExecutionQueue(store, async (_rec, ctx) => {
+    executed = true;
+    assert.equal(ctx?.signal.aborted, false);
+    throw new Error("External payment channel cancelled by remote counterparty");
+  });
+
+  const execution = makeExecution({ status: "queued", nextRetryAt: "2026-01-01T00:00:00Z" });
+  await store.record(execution);
+
+  const started = await queue.processDue("2026-01-01T00:00:01Z");
+  assert.equal(started, 1);
+  assert.equal(executed, true);
+
+  const stored = await store.get(execution.id);
+  // Must NOT be stuck in "executing"
+  assert.notEqual(stored?.status, "executing", "execution must not remain stuck in executing");
+  assert.equal(stored?.status, "dead_letter", "permanent failure moves to dead_letter");
+  assert.match(stored?.error ?? "", /cancelled by remote counterparty/i);
+});
+
+test("ExecutionQueue: unrelated transient error containing 'cancelled' follows retry failure path", async () => {
+  const store = new InMemoryExecutionStore();
+  const queue = new ExecutionQueue(store, async (_rec, ctx) => {
+    assert.equal(ctx?.signal.aborted, false);
+    throw new Error("Horizon network timeout: stream cancelled by gateway");
+  });
+
+  const execution = makeExecution({ status: "queued", nextRetryAt: "2026-01-01T00:00:00Z" });
+  await store.record(execution);
+
+  const started = await queue.processDue("2026-01-01T00:00:01Z");
+  assert.equal(started, 1);
+
+  const stored = await store.get(execution.id);
+  assert.notEqual(stored?.status, "executing", "execution must not remain stuck in executing");
+  assert.equal(stored?.status, "failed");
+  assert.match(stored?.error ?? "", /stream cancelled by gateway/i);
+  assert.ok(stored?.nextRetryAt !== null, "transient error should have nextRetryAt scheduled");
+});
+
+test("ExecutionQueue: unrelated AbortError when signal is not aborted follows normal failure path", async () => {
+  const store = new InMemoryExecutionStore();
+  const queue = new ExecutionQueue(store, async (_rec, ctx) => {
+    assert.equal(ctx?.signal.aborted, false);
+    const err = new Error("Horizon fetch timeout aborted");
+    err.name = "AbortError";
+    throw err;
+  });
+
+  const execution = makeExecution({ status: "queued", nextRetryAt: "2026-01-01T00:00:00Z" });
+  await store.record(execution);
+
+  await queue.processDue("2026-01-01T00:00:01Z");
+
+  const stored = await store.get(execution.id);
+  // Must NOT be stuck in "executing"
+  assert.notEqual(stored?.status, "executing", "execution must not remain stuck in executing");
+  assert.equal(stored?.status, "failed");
+  assert.match(stored?.error ?? "", /fetch timeout aborted/i);
 });
 
