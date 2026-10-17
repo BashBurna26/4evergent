@@ -77,9 +77,12 @@ export class InMemoryExecutionStore implements ExecutionStore {
     const result: Record<ExecutionStatus, number> = {
       queued: 0, executing: 0, submitted: 0,
       confirmed: 0, failed: 0, dead_letter: 0,
+      cancelled: 0,
     };
     for (const [status, count] of Object.entries(counts)) {
-      result[status as ExecutionStatus] = count;
+      if (status in result) {
+        result[status as ExecutionStatus] = count;
+      }
     }
     return result;
   }
@@ -378,6 +381,7 @@ export class SQLiteExecutionStore implements ExecutionStore {
     const result: Record<ExecutionStatus, number> = {
       queued: 0, executing: 0, submitted: 0,
       confirmed: 0, failed: 0, dead_letter: 0,
+      cancelled: 0,
     };
     for (const row of rows) {
       const s = row.status as ExecutionStatus;

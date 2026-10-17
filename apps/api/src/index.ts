@@ -281,7 +281,10 @@ export async function createApiServer(options: ServerOptions) {
       };
     };
 
-    const pipelineExecutor = async (record: ExecutionRecord) => {
+    const pipelineExecutor = async (
+      record: ExecutionRecord,
+      context?: import("./execution-queue.js").ExecutionContext
+    ) => {
       // Phase 25: Wrap sequence-sensitive execution in account-scoped lock.
       //
       // WHY: Two concurrent executions using the SAME Stellar source account
@@ -299,14 +302,31 @@ export async function createApiServer(options: ServerOptions) {
       // two executions read the same sequence before either acquires the lock.
       const accountId = options.signer.getAccountId();
       return sequenceCoordinator.runExclusive(accountId, async () => {
+        if (context?.signal?.aborted) {
+          const err = new Error("Execution was cancelled");
+          err.name = "AbortError";
+          throw err;
+        }
         try {
           const sourceAccount = await getSourceAccount();
+          if (context?.signal?.aborted) {
+            const err = new Error("Execution was cancelled");
+            err.name = "AbortError";
+            throw err;
+          }
           const outcome = await pipeline.execute({
             intent: record.intent,
             sourceAccount,
             activityId: record.activityId ?? undefined,
+            signal: context?.signal,
+            onBeforeSubmit: () => {
+              context?.onBeforeSubmit?.();
+            },
           });
           const txHash = (outcome as { txHash?: string }).txHash;
+          if (txHash) {
+            context?.onSubmitted?.(txHash);
+          }
           return {
             record,
             success: outcome.status === "submitted",
@@ -318,6 +338,20 @@ export async function createApiServer(options: ServerOptions) {
             activityId: (outcome as { activityId?: string }).activityId ?? record.activityId ?? undefined,
           };
         } catch (err: unknown) {
+          if (context?.signal?.aborted) {
+            if (record.activityId && options.activityStore) {
+              try {
+                await options.activityStore.update(record.activityId, {
+                  status: "failed",
+                  error: "cancelled by user",
+                  updatedAt: new Date().toISOString(),
+                });
+              } catch {
+                // ActivityStore update failure is non-critical
+              }
+            }
+            throw err;
+          }
           // Pipeline failed before persisting activity (e.g., source account load failure).
           // Update the pre-created ActivityRecord to reflect the failure so the
           // activity record is not left in "pending" indefinitely.
@@ -1290,7 +1324,19 @@ export async function createApiServer(options: ServerOptions) {
 
     const result = await executionQueue.cancel(executionId);
     if (result.status === "not_found") return json(res, { error: "not found" }, 404);
-    if (result.status === "invalid_state") return json(res, { error: `cannot cancel execution in status '${execution.status}'` }, 409);
+    if (result.status === "invalid_state") {
+      const current = await executionStore.get(executionId);
+      const currentStatus = current?.status ?? execution.status;
+      let msg: string;
+      if (currentStatus !== "executing") {
+        msg = `cannot cancel execution in status '${currentStatus}'`;
+      } else if (result.reason === "not_in_flight") {
+        msg = "cannot cancel execution: execution is not actively running on this worker";
+      } else {
+        msg = "cannot cancel execution: pipeline has already begun submitting transaction";
+      }
+      return json(res, { error: msg }, 409);
+    }
     if (result.status === "conflict") return json(res, { error: "execution state changed; please refresh" }, 409);
 
     return json(res, { execution: result.execution, message: "execution cancelled" });

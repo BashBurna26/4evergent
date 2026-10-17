@@ -15,7 +15,7 @@ import LogoMark from '../components/LogoMark';
      three verdicts   types.ts  PolicyDecision.result  allow|deny|requires_approval
      approval states  types.ts  ApprovalStatus
      execution states types.ts  ExecutionStatus  queued|executing|submitted|
-                                confirmed|failed|dead_letter
+                                confirmed|failed|dead_letter|cancelled
      policy rules     types.ts  PolicyRules
      schedule states  types.ts  ScheduleStatus   active|paused|disabled
      intent types     types.ts  IntentType; Submit.tsx exposes payment+trustline;

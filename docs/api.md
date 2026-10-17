@@ -431,19 +431,30 @@ Single execution (owner-scoped via `getForOwner`). Returns
 ### POST /executions/:id/retry
 
 Retry a `failed` or `dead_letter` execution. Requires the execution
-queue to be enabled.
+queue to be enabled. Cancelled executions cannot be retried.
 
 - `200` → `{ "execution", "message": "execution queued for retry" }`
-- `409` → wrong status / max retries reached / state conflict
+- `409` → wrong status (e.g. attempting to retry a `cancelled` execution) / max retries reached / state conflict
 - `404` → not found / queue not enabled
 
 ### POST /executions/:id/cancel
 
 Cancel a `queued` or `executing` execution. Requires the queue.
+Transitions the execution to the terminal `cancelled` status with `error: "cancelled by user"`.
+Cancelled executions represent intentional operator stops (a value-safety control) and
+cannot be retried via `/executions/:id/retry`. They are reported under `cancelled` in status
+summaries and are not counted as failed or dead-letter executions in overview counters.
 
-- `200` → `{ "execution", "message": "execution cancelled" }`
+- `200` → `{ "execution", "message": "execution cancelled" }` (returned execution has `status: "cancelled"`)
 - `409` → wrong status / conflict
 - `404` → not found / queue not enabled
+
+> **Migration note**: Existing historical records carrying `status: "dead_letter"` with
+> `error: "cancelled by user"` (from prior releases where manual cancellations transitioned to
+> `dead_letter`) are intentionally not silently reclassified to `cancelled`. They remain stored
+> as `dead_letter` to preserve historical record integrity. Operators inspecting historical data
+> will continue to see `dead_letter` for older cancellations. All cancellations performed going
+> forward will transition to the distinct `cancelled` terminal status.
 
 ### GET /agent-queue
 

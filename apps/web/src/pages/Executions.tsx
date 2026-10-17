@@ -14,6 +14,7 @@ const FILTER_OPTIONS: { value: StatusFilter; label: string }[] = [
   { value: 'confirmed', label: 'Confirmed' },
   { value: 'failed', label: 'Failed' },
   { value: 'dead_letter', label: 'Dead Letter' },
+  { value: 'cancelled', label: 'Cancelled' },
 ];
 
 const PAGE_SIZE = 50;
@@ -26,6 +27,7 @@ function statusLabel(status: ExecutionStatus): string {
     case 'confirmed': return 'Confirmed';
     case 'failed': return 'Failed';
     case 'dead_letter': return 'Dead Letter';
+    case 'cancelled': return 'Cancelled';
   }
 }
 
@@ -37,6 +39,7 @@ function statusClass(status: ExecutionStatus): string {
     case 'confirmed': return 'badge-ok';
     case 'failed': return 'badge-err';
     case 'dead_letter': return 'badge-err';
+    case 'cancelled': return 'badge-neutral';
   }
 }
 

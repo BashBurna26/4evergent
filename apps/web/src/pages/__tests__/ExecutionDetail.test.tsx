@@ -100,6 +100,14 @@ describe('ExecutionDetail retry/cancel actions', () => {
         expect(screen.queryByText('Retry Execution')).not.toBeInTheDocument();
       });
     });
+
+    it('hides Retry for cancelled status', async () => {
+      mockGetExecution.mockResolvedValue({ execution: makeExecution({ status: 'cancelled' }) });
+      renderDetail();
+      await waitFor(() => {
+        expect(screen.queryByText('Retry Execution')).not.toBeInTheDocument();
+      });
+    });
   });
 
   describe('Retry action', () => {
@@ -196,6 +204,27 @@ describe('ExecutionDetail retry/cancel actions', () => {
       renderDetail();
       await waitFor(() => {
         expect(screen.queryByText('Cancel Execution')).not.toBeInTheDocument();
+      });
+    });
+
+    it('hides Cancel for cancelled status', async () => {
+      mockGetExecution.mockResolvedValue({ execution: makeExecution({ status: 'cancelled' }) });
+      renderDetail();
+      await waitFor(() => {
+        expect(screen.queryByText('Cancel Execution')).not.toBeInTheDocument();
+      });
+    });
+  });
+
+  describe('Cancelled status display', () => {
+    it('displays Cancelled badge and description for cancelled execution', async () => {
+      mockGetExecution.mockResolvedValue({ execution: makeExecution({ status: 'cancelled' }) });
+      renderDetail();
+      await waitFor(() => {
+        const badge = screen.getByText('Cancelled');
+        expect(badge).toBeInTheDocument();
+        expect(badge).toHaveClass('badge-neutral');
+        expect(screen.getByText('Execution was cancelled by operator and will not be retried.')).toBeInTheDocument();
       });
     });
   });

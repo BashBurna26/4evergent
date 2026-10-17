@@ -31,6 +31,8 @@ export interface PipelineExecuteInput {
   idempotencyKey?: string | null;
   /** Pre-existing activity ID to update instead of creating a new ActivityRecord. */
   activityId?: string;
+  signal?: AbortSignal;
+  onBeforeSubmit?: () => void | Promise<void>;
 }
 
 export class TransactionPipeline {
@@ -60,7 +62,16 @@ export class TransactionPipeline {
   }
 
   async execute(input: PipelineExecuteInput): Promise<PipelineOutcome> {
-    const { intent, sourceAccount, idempotencyKey, activityId } = input;
+    const { intent, sourceAccount, idempotencyKey, activityId, signal } = input;
+
+    const checkAbort = () => {
+      if (signal?.aborted) {
+        const err = new Error("Execution was cancelled");
+        err.name = "AbortError";
+        throw err;
+      }
+    };
+    checkAbort();
 
     const validation = IntentValidator.validate(intent);
     if (!validation.valid) {
@@ -118,6 +129,8 @@ export class TransactionPipeline {
       };
     }
 
+    checkAbort();
+
     let tx;
     try {
       if (intent.type === "trustline") {
@@ -128,6 +141,9 @@ export class TransactionPipeline {
         tx = await this.builder.buildPayment(sourceAccount, intent as any, this.signer.getNetworkPassphrase());
       }
     } catch (e: any) {
+      if (signal?.aborted || e?.name === "AbortError") {
+        throw e;
+      }
       const activity = this.resolveActivity(activityId, agentId, ownerId, intent, decision, idempotencyKey);
       activity.status = "rejected";
       activity.error = e.message;
@@ -140,6 +156,8 @@ export class TransactionPipeline {
         activityId: activity.id,
       };
     }
+
+    checkAbort();
 
     const simResult = await this.simulator.simulate(tx);
     if (!simResult.success) {
@@ -157,10 +175,15 @@ export class TransactionPipeline {
       };
     }
 
+    checkAbort();
+
     let signedTx;
     try {
       signedTx = await this.signer.sign(tx);
     } catch (e: any) {
+      if (signal?.aborted || e?.name === "AbortError") {
+        throw e;
+      }
       const activity = this.resolveActivity(activityId, agentId, ownerId, intent, decision, idempotencyKey);
       activity.status = "failed";
       activity.error = e.message;
@@ -173,6 +196,10 @@ export class TransactionPipeline {
         activityId: activity.id,
       };
     }
+
+    checkAbort();
+    await input.onBeforeSubmit?.();
+    checkAbort();
 
     // PERSIST txHash BEFORE submit to survive crash window.
     // If process crashes after submit but before we return, the txHash is already
@@ -197,6 +224,9 @@ export class TransactionPipeline {
         submittedHash: result.hash,
       };
     } catch (e: any) {
+      if (signal?.aborted || e?.name === "AbortError") {
+        throw e;
+      }
       // Submit failed — record pre-submit hash + error for recovery/reconciliation
       const activity = this.resolveActivity(activityId, agentId, ownerId, intent, decision, idempotencyKey);
       activity.status = "failed";

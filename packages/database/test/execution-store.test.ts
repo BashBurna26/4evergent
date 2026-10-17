@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { InMemoryExecutionStore, SQLiteExecutionStore } from "../src/execution-store.js";
 import { closeAllSharedConnections } from "../src/shared-connection.js";
-import type { ExecutionRecord, ExecutionStore } from "../src/execution-types.js";
+import type { ExecutionRecord, ExecutionStore, ExecutionStatus } from "../src/execution-types.js";
 
 const tmpDirs: string[] = [];
 
@@ -269,7 +269,7 @@ for (const harness of harnesses) {
     assert.equal(farFuture.some((r) => r.id === record.id), false, "dead_letter is terminal");
   });
 
-  test(`${harness.name}: listStuckExecuting and listSubmitted are oldest-first`, async () => {
+  test(`${harness.name}: listStuckExecuting and listSubmitted return oldest-first`, async () => {
     const store = harness.create();
     await store.record(makeRecord({ id: "exec-new", status: "executing", createdAt: "2026-01-01T00:00:20.000Z" }));
     await store.record(makeRecord({ id: "exec-old", status: "executing", createdAt: "2026-01-01T00:00:10.000Z" }));
@@ -295,7 +295,118 @@ for (const harness of harnesses) {
       confirmed: 0,
       failed: 0,
       dead_letter: 1,
+      cancelled: 0,
     });
+  });
+
+  test(`${harness.name}: records and reads cancelled execution`, async () => {
+    const store = harness.create();
+    const now = new Date().toISOString();
+    const rec = makeRecord({
+      status: "cancelled",
+      completedAt: now,
+      error: "cancelled by user",
+    });
+    await store.record(rec);
+
+    const got = await store.get(rec.id);
+    assert.ok(got);
+    assert.equal(got.id, rec.id);
+    assert.equal(got.status, "cancelled");
+    assert.equal(got.error, "cancelled by user");
+    assert.equal(got.completedAt, now);
+
+    const gotForOwner = await store.getForOwner(rec.id, "owner-a");
+    assert.ok(gotForOwner);
+    assert.equal(gotForOwner.status, "cancelled");
+  });
+
+  test(`${harness.name}: countByOwner tracks cancelled status separately from dead_letter and failed`, async () => {
+    const store = harness.create();
+    const statuses: ExecutionStatus[] = [
+      "queued",
+      "executing",
+      "submitted",
+      "confirmed",
+      "failed",
+      "dead_letter",
+      "cancelled",
+    ];
+    for (const s of statuses) {
+      await store.record(makeRecord({ id: `exec-${s}`, status: s, ownerId: "owner-count" }));
+    }
+    // Also record an execution for another owner to ensure owner isolation
+    await store.record(makeRecord({ id: "exec-other", status: "cancelled", ownerId: "owner-other" }));
+
+    const counts = await store.countByOwner("owner-count");
+    assert.deepEqual(counts, {
+      queued: 1,
+      executing: 1,
+      submitted: 1,
+      confirmed: 1,
+      failed: 1,
+      dead_letter: 1,
+      cancelled: 1,
+    });
+
+    const otherCounts = await store.countByOwner("owner-other");
+    assert.equal(otherCounts.cancelled, 1);
+    assert.equal(otherCounts.dead_letter, 0);
+  });
+
+  test(`${harness.name}: updateIfStatus atomically transitions queued and executing to cancelled`, async () => {
+    const store = harness.create();
+    const queuedRec = makeRecord({ status: "queued" });
+    const executingRec = makeRecord({ status: "executing" });
+    await store.record(queuedRec);
+    await store.record(executingRec);
+
+    const now = new Date().toISOString();
+
+    // Transition queued → cancelled
+    const updatedQueued = await store.updateIfStatus(queuedRec.id, "queued", {
+      status: "cancelled",
+      error: "cancelled by user",
+      completedAt: now,
+    });
+    assert.ok(updatedQueued);
+    assert.equal(updatedQueued.status, "cancelled");
+    assert.equal(updatedQueued.error, "cancelled by user");
+
+    // Transition executing → cancelled
+    const updatedExecuting = await store.updateIfStatus(executingRec.id, "executing", {
+      status: "cancelled",
+      error: "cancelled by user",
+      completedAt: now,
+    });
+    assert.ok(updatedExecuting);
+    assert.equal(updatedExecuting.status, "cancelled");
+    assert.equal(updatedExecuting.error, "cancelled by user");
+
+    // Race guard: updateIfStatus fails if expected status does not match current status
+    const mismatch = await store.updateIfStatus(queuedRec.id, "queued", {
+      status: "dead_letter",
+    });
+    assert.equal(mismatch, null);
+  });
+
+  test(`${harness.name}: migration note verification — historical dead_letter records with error 'cancelled by user' are preserved`, async () => {
+    const store = harness.create();
+    const historicalRec = makeRecord({
+      status: "dead_letter",
+      error: "cancelled by user",
+      completedAt: "2025-12-01T00:00:00.000Z",
+    });
+    await store.record(historicalRec);
+
+    const got = await store.get(historicalRec.id);
+    assert.ok(got);
+    assert.equal(got.status, "dead_letter");
+    assert.equal(got.error, "cancelled by user");
+
+    const counts = await store.countByOwner("owner-a");
+    assert.equal(counts.dead_letter, 1);
+    assert.equal(counts.cancelled, 0);
   });
 
   test(`${harness.name}: listByOwner/listByAgent paginate newest-first`, async () => {
