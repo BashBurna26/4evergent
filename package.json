@@ -17,7 +17,7 @@
     "test:coverage": "node scripts/test-coverage.mjs",
     "typecheck": "pnpm -r typecheck",
     "lint": "eslint .",
-    "check:openapi": "node scripts/check-openapi.mjs"
+    "check:openapi": "node scripts/check-openapi.mjs",
     "verify": "echo '==> Build' && pnpm build && echo '==> Lint' && pnpm lint && echo '==> Typecheck' && pnpm typecheck && echo '==> Test' && pnpm test"
   },
   "devDependencies": {
