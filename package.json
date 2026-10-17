@@ -16,7 +16,8 @@
     "test": "pnpm -r test",
     "test:coverage": "node scripts/test-coverage.mjs",
     "typecheck": "pnpm -r typecheck",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "verify": "echo '==> Build' && pnpm build && echo '==> Lint' && pnpm lint && echo '==> Typecheck' && pnpm typecheck && echo '==> Test' && pnpm test"
   },
   "devDependencies": {
     "@eslint/js": "^9.17.0",

@@ -119,12 +119,11 @@ cd 4evergent
 # install (Node 22+, pnpm 10+, frozen lockfile for reproducible builds)
 pnpm install --frozen-lockfile
 
-# build all packages
-pnpm build
-
-# run tests
-pnpm test
+# run the same checks as CI (build, lint, typecheck, then tests)
+pnpm verify
 ```
+
+`pnpm verify` runs the repository checks in CI order and stops at the first failure. Dependencies must be installed first.
 
 ### Prerequisites
 
