@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { ApiError, isUnauthorizedError, isForbiddenError } from '../api';
 import * as auth from '../auth';
 

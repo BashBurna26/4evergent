@@ -1,6 +1,5 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { InMemoryScheduleStore } from "@4evergent/database";
 import type { ScheduleRecord, ExecutionRecord } from "@4evergent/database";
 import crypto from "node:crypto";
 import { startServer, waitFor } from "./helpers.js";
