@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { useParams } from 'react-router-dom';
 import { api } from '../api';
 import type { ScheduleRecord } from '../types';
-import { PaginationFooter } from '../components';
+import { PaginationFooter, Skeleton } from '../components';
 
 interface ScheduleListProps {
   agentId: string;
@@ -45,7 +45,7 @@ export function ScheduleList({ agentId: propAgentId, onError }: ScheduleListProp
 
   if (!agentId) return <div className="empty-state"><p>No agent specified.</p></div>;
   if (error) return <div className="error">{error}</div>;
-  if (schedules === null) return <div className="skeleton">Loading schedules...</div>;
+  if (schedules === null) return <Skeleton label="Loading schedules..." />;
   if (schedules.length === 0) {
     return (
       <div className="empty-state">

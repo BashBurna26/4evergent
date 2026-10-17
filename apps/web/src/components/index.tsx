@@ -81,7 +81,11 @@ export function Card({ title, value, label }: { title: string; value: string; la
    ========================================================================== */
 
 export function Skeleton({ label }: { label: string }) {
-  return <div className="skeleton">{label}</div>;
+  return (
+    <div className="skeleton" role="status" aria-live="polite" aria-label={label}>
+      {label}
+    </div>
+  );
 }
 
 /* ==========================================================================
