@@ -43,7 +43,7 @@ All notable changes to this project are recorded in this file.
 ### Documentation
 - Phase 19A: refreshed README, CONTRIBUTING, security-model, architecture, testnet docs
 - Added SECURITY.md, issue templates, PR template
-- Updated roadmap and architecture references to reflect Phases 12 through 28K (Phase 28)
+- Updated roadmap (`docs/roadmap.md`) to reflect shipped Phases 12 through 28W
 
 ## [0.1.0] — Project inception through Phase 18
 
