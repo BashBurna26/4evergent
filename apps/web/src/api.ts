@@ -93,9 +93,9 @@ export const api = {
 
   getAgent: (agentId: string) => request<AgentRecord>(`/agents/${encodeURIComponent(agentId)}`),
 
-  agentActivity: (agentId: string, limit = 50) =>
-    request<{ agentId: string; activity: ActivityRecord[] }>(
-      `/agents/${encodeURIComponent(agentId)}/activity?limit=${limit}`
+  agentActivity: (agentId: string, limit = 50, offset = 0) =>
+    request<{ agentId: string; activity: ActivityRecord[]; hasMore: boolean }>(
+      `/agents/${encodeURIComponent(agentId)}/activity?limit=${limit}&offset=${offset}`
     ),
 
   activityDetail: (agentId: string, activityId: string) =>
@@ -133,9 +133,12 @@ export const api = {
       },
     ),
 
-  listApprovals: (statusFilter?: string) => {
-    const qs = statusFilter ? `?status=${encodeURIComponent(statusFilter)}` : '';
-    return request<{ approvals: ApprovalRecord[] }>(`/approvals${qs}`);
+  listApprovals: (statusFilter?: string, limit = 50, offset = 0) => {
+    const params = new URLSearchParams();
+    if (statusFilter) params.set("status", statusFilter);
+    params.set("limit", String(limit));
+    params.set("offset", String(offset));
+    return request<{ approvals: ApprovalRecord[]; hasMore: boolean }>(`/approvals?${params}`);
   },
 
   approvalDetail: (approvalId: string) =>
@@ -173,19 +176,19 @@ export const api = {
 
   // ===== Executions =====
 
-  listAllExecutions: (limit = 50) =>
-    request<{ executions: ExecutionRecord[] }>(
-      `/executions?limit=${limit}`
+  listAllExecutions: (limit = 50, offset = 0) =>
+    request<{ executions: ExecutionRecord[]; hasMore: boolean }>(
+      `/executions?limit=${limit}&offset=${offset}`
     ),
 
-  listActivity: (limit = 50) =>
-    request<{ activity: ActivityRecord[] }>(
-      `/activity?limit=${limit}`
+  listActivity: (limit = 50, offset = 0) =>
+    request<{ activity: ActivityRecord[]; hasMore: boolean }>(
+      `/activity?limit=${limit}&offset=${offset}`
     ),
 
-  listAgentExecutions: (agentId: string, limit = 50) =>
-    request<{ agentId: string; executions: ExecutionRecord[] }>(
-      `/agents/${encodeURIComponent(agentId)}/executions?limit=${limit}`
+  listAgentExecutions: (agentId: string, limit = 50, offset = 0) =>
+    request<{ agentId: string; executions: ExecutionRecord[]; hasMore: boolean }>(
+      `/agents/${encodeURIComponent(agentId)}/executions?limit=${limit}&offset=${offset}`
     ),
 
   getExecution: (executionId: string) =>
@@ -217,9 +220,9 @@ export const api = {
 
   // ===== Schedules =====
 
-  listSchedules: (agentId: string, limit = 50) =>
-    request<{ agentId: string; schedules: ScheduleRecord[] }>(
-      `/agents/${encodeURIComponent(agentId)}/schedules?limit=${limit}`
+  listSchedules: (agentId: string, limit = 50, offset = 0) =>
+    request<{ agentId: string; schedules: ScheduleRecord[]; hasMore: boolean }>(
+      `/agents/${encodeURIComponent(agentId)}/schedules?limit=${limit}&offset=${offset}`
     ),
 
   getSchedule: (agentId: string, scheduleId: string) =>

@@ -119,12 +119,22 @@ All decisions recorded via the ADR-lite convention. Each entry: **Status | Conte
 - No production authentication — `requestContext.ownerId` is set server-side (existing limitation)
 - `AgentRecord` has no secret fields by construction
 
-## ADR-014: Bounded missed schedule runs
+## ADR-014: Bounded retention sweeps for transient data
+
+**Status:** Accepted
+
+**Context:** Expired authentication sessions and historical daily-spending reservations accumulated indefinitely. The former exposed stale tokens in storage; the latter had no readers once its UTC day passed. Cleanup must not starve request traffic.
+
+**Decision:** Sweep sessions 30 days after `expires_at` and daily-spending rows older than 90 UTC days, once per day. Each indexed delete is limited to 500 rows per table and runs as a short autocommit statement. Operators can set the two retention-day environment variables, change the interval, disable the worker, or set either day window to zero to retain that table forever. The idempotency table remains outside this policy and belongs to #109.
+
+**Consequences:** Transient storage is bounded over repeated sweeps without a schema migration or a long-held write transaction. A large backlog drains in batches. Recent expired sessions and the current spending day remain available; setting a zero window explicitly keeps all rows.
+
+## ADR-015: Bounded missed schedule runs
 
 **Status:** Accepted
 
 **Context:** A process restart can leave scheduled value-moving work overdue. Replaying every missed cron interval creates a burst, while silently running an old occurrence leaves operators unaware of downtime.
 
-**Decision:** Run occurrences due now or up to five minutes late. Skip older occurrences, log the schedule ID and lateness, and advance the schedule to its next cron occurrence. Configure the grace period with `SCHEDULER_MAX_LATENESS_MS` (default `300000`).
+**Decision:** Run occurrences due now or up to five minutes late. Skip older occurrences, log the schedule ID and lateness, and advance the schedule to its next cron occurrence. If the expression is invalid or cannot yield a future occurrence, pause the schedule and log the reason so an operator can correct it. Configure the grace period with `SCHEDULER_MAX_LATENESS_MS` (default `300000`).
 
 **Consequences:** Restart recovery cannot generate an unbounded catch-up burst. A skipped run is visible in server logs; users needing a longer grace period can configure it. Normal on-time execution retains the existing policy and approval pipeline.

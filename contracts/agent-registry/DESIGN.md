@@ -2,6 +2,20 @@
 
 Scope: intent + API mapping for `src/lib.rs` as currently written. No implementation yet.
 
+## Events
+
+Each successful mutation publishes one contract event with the format `("agent", <action>)` as topics and a tuple of relevant identifiers as data. Consumers can subscribe to these events to observe identity lifecycle changes without polling `query()`.
+
+| Entrypoint | Topics | Data |
+|---|---|---|
+| `register` | `("agent", "registered")` | `(id, owner, stellar_address)` |
+| `update_metadata` | `("agent", "updated")` | `(id, owner)` |
+| `deactivate` | `("agent", "deactivated")` | `(id, owner)` |
+
+- Events are published **only on success** — failed mutations (validation errors, unauthorized access, deactivated tombstone) emit no events.
+- Events are published via `env.events().publish()` using `String` topic values (not `Symbol`), so topic matching in tests uses `try_into_val::<_, String>()`.
+- A negative test (`test_failed_register_emits_no_event`) and a second negative test (`test_failed_update_emits_no_event`) verify that rejected calls emit nothing.
+
 ## Entrypoints — intended behavior (inferred from names, doc comments, tests)
 
 | Fn | Intended | Mutates? |

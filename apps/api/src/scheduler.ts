@@ -61,8 +61,18 @@ export class AgentScheduler {
         const next = validateScheduleExpression(schedule.scheduleExpression, schedule.timezone);
         const nextRunAt = next.valid && next.nextRunAt && Date.parse(next.nextRunAt) > Date.parse(now)
           ? next.nextRunAt
-          : schedule.nextRunAt;
-        await this.scheduleStore.update(schedule.id, { nextRunAt, lastRunAt: now });
+          : null;
+        if (nextRunAt) {
+          await this.scheduleStore.update(schedule.id, { nextRunAt, lastRunAt: now });
+        } else {
+          // Never leave an unadvanceable occurrence active: it would remain
+          // due on every poll. Pause it so an operator can correct the
+          // expression before the scheduler considers it again.
+          await this.scheduleStore.update(schedule.id, { status: "paused", lastRunAt: now });
+          console.error(
+            `[scheduler] paused stale schedule ${schedule.id}: could not compute a future occurrence${next.error ? ` (${next.error})` : ""}`
+          );
+        }
         console.warn(`[scheduler] skipped stale schedule ${schedule.id}: ${Math.round(latenessMs / 1000)}s late (limit ${Math.round(this.maxLatenessMs / 1000)}s)`);
         continue;
       }

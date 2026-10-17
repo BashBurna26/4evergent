@@ -5,9 +5,12 @@
 //! - update_metadata(caller, id, new_display_name, new_capabilities)
 //! - deactivate(caller, id)
 //! - query(id)
-//! - authorization: every mutating entrypoint takes the acting `Address` and
+//! - authorization: every *** entrypoint takes the acting `Address` and
 //!   calls `require_auth()` as its first statement; only the registered owner
 //!   may update/deactivate their own agent.
+//!
+//! Events: each successful mutation publishes a contract event with topics
+//! `("agent", <action>)` — see `DESIGN.md` for the full event schema.
 //!
 //! Lifecycle/TTL model:
 //! - Agent records live in *persistent* storage under `DataKey::Agent(id)`.
@@ -146,7 +149,7 @@ impl AgentRegistry {
         let now = env.ledger().timestamp();
         let info = AgentInfo {
             id: id.clone(),
-            owner: caller,
+            owner: caller.clone(),
             display_name,
             stellar_address,
             capabilities,
@@ -156,6 +159,13 @@ impl AgentRegistry {
         };
         env.storage().persistent().set(&key, &info);
         bump_ttl(&env, &key);
+        env.events().publish(
+            (
+                String::from_str(&env, "agent"),
+                String::from_str(&env, "registered"),
+            ),
+            (id, caller, info.stellar_address.clone()),
+        );
         Ok(info)
     }
 
@@ -169,7 +179,7 @@ impl AgentRegistry {
         new_capabilities: Vec<String>,
     ) -> Result<AgentInfo, Error> {
         caller.require_auth();
-        let key = DataKey::Agent(id);
+        let key = DataKey::Agent(id.clone());
         let mut info: AgentInfo = env
             .storage()
             .persistent()
@@ -188,6 +198,13 @@ impl AgentRegistry {
         info.updated_at = env.ledger().timestamp();
         env.storage().persistent().set(&key, &info);
         bump_ttl(&env, &key);
+        env.events().publish(
+            (
+                String::from_str(&env, "agent"),
+                String::from_str(&env, "updated"),
+            ),
+            (id, caller),
+        );
         Ok(info)
     }
 
@@ -196,7 +213,7 @@ impl AgentRegistry {
     /// and there is no reactivation entrypoint. Only the registered owner.
     pub fn deactivate(env: Env, caller: Address, id: String) -> Result<bool, Error> {
         caller.require_auth();
-        let key = DataKey::Agent(id);
+        let key = DataKey::Agent(id.clone());
         let mut info: AgentInfo = env
             .storage()
             .persistent()
@@ -209,6 +226,13 @@ impl AgentRegistry {
         info.updated_at = env.ledger().timestamp();
         env.storage().persistent().set(&key, &info);
         bump_ttl(&env, &key);
+        env.events().publish(
+            (
+                String::from_str(&env, "agent"),
+                String::from_str(&env, "deactivated"),
+            ),
+            (id, caller),
+        );
         Ok(true)
     }
 
@@ -229,10 +253,10 @@ mod test {
     use super::*;
     use soroban_sdk::{
         testutils::{
-            storage::Instance as _, storage::Persistent as _, Address as _, Ledger as _, MockAuth,
-            MockAuthInvoke,
+            storage::Instance as _, storage::Persistent as _, Address as _, Events as _,
+            Ledger as _, MockAuth, MockAuthInvoke,
         },
-        vec, IntoVal, Val,
+        vec, IntoVal, TryIntoVal, Val,
     };
     use std::println;
 
@@ -832,5 +856,151 @@ mod test {
             inst_before, inst_after,
             "query must not mutate the contract instance TTL"
         );
+    }
+
+    // ---- event emission tests ----
+
+    /// Captures contract events published during execution of `f`.
+    fn capture_events<F>(env: &Env, f: F) -> Vec<(Address, Vec<Val>, Val)>
+    where
+        F: FnOnce(),
+    {
+        f();
+        env.events().all()
+    }
+
+    #[test]
+    fn test_register_emits_event() {
+        let (env, _cid, client) = setup();
+        env.mock_all_auths();
+        let owner = Address::generate(&env);
+        let stellar_addr = Address::generate(&env);
+        let id = String::from_str(&env, "agent_1");
+
+        let events = capture_events(&env, || {
+            client.register(
+                &owner,
+                &id,
+                &String::from_str(&env, "Test Agent"),
+                &stellar_addr,
+                &Vec::new(&env),
+            );
+        });
+
+        assert_eq!(events.len(), 1, "register should emit exactly one event");
+        let (_, topics, data) = events.get(0).unwrap();
+        assert_eq!(topics.len(), 2);
+        let t0: String = topics.get(0).unwrap().clone().try_into_val(&env).unwrap();
+        let t1: String = topics.get(1).unwrap().clone().try_into_val(&env).unwrap();
+        assert_eq!(t0, String::from_str(&env, "agent"));
+        assert_eq!(t1, String::from_str(&env, "registered"));
+
+        let payload: (String, Address, Address) = data.clone().try_into_val(&env).unwrap();
+        assert_eq!(payload.0, id);
+        assert_eq!(payload.1, owner);
+    }
+
+    #[test]
+    fn test_update_metadata_emits_event() {
+        let (env, _cid, client) = setup();
+        env.mock_all_auths();
+        let owner = Address::generate(&env);
+        let id = String::from_str(&env, "agent_1");
+        register(&env, &client, &owner, &id, "Original");
+
+        let events = capture_events(&env, || {
+            client.update_metadata(
+                &owner,
+                &id,
+                &String::from_str(&env, "Updated"),
+                &Vec::new(&env),
+            );
+        });
+
+        assert_eq!(
+            events.len(),
+            1,
+            "update_metadata should emit exactly one event"
+        );
+        let (_, topics, data) = events.get(0).unwrap();
+        assert_eq!(topics.len(), 2);
+        let t0: String = topics.get(0).unwrap().clone().try_into_val(&env).unwrap();
+        let t1: String = topics.get(1).unwrap().clone().try_into_val(&env).unwrap();
+        assert_eq!(t0, String::from_str(&env, "agent"));
+        assert_eq!(t1, String::from_str(&env, "updated"));
+
+        let payload: (String, Address) = data.clone().try_into_val(&env).unwrap();
+        assert_eq!(payload.0, id);
+        assert_eq!(payload.1, owner);
+    }
+
+    #[test]
+    fn test_deactivate_emits_event() {
+        let (env, _cid, client) = setup();
+        env.mock_all_auths();
+        let owner = Address::generate(&env);
+        let id = String::from_str(&env, "agent_1");
+        register(&env, &client, &owner, &id, "Test");
+
+        let events = capture_events(&env, || {
+            client.deactivate(&owner, &id);
+        });
+
+        assert_eq!(events.len(), 1, "deactivate should emit exactly one event");
+        let (_, topics, data) = events.get(0).unwrap();
+        assert_eq!(topics.len(), 2);
+        let t0: String = topics.get(0).unwrap().clone().try_into_val(&env).unwrap();
+        let t1: String = topics.get(1).unwrap().clone().try_into_val(&env).unwrap();
+        assert_eq!(t0, String::from_str(&env, "agent"));
+        assert_eq!(t1, String::from_str(&env, "deactivated"));
+
+        let payload: (String, Address) = data.clone().try_into_val(&env).unwrap();
+        assert_eq!(payload.0, id);
+        assert_eq!(payload.1, owner);
+    }
+
+    #[test]
+    fn test_failed_register_emits_no_event() {
+        let (env, _cid, client) = setup();
+        env.mock_all_auths();
+        let owner = Address::generate(&env);
+        let id = String::from_str(&env, "agent_1");
+        register(&env, &client, &owner, &id, "A");
+
+        let events = capture_events(&env, || {
+            let res = client.try_register(
+                &owner,
+                &id,
+                &String::from_str(&env, "B"),
+                &owner,
+                &Vec::new(&env),
+            );
+            assert!(res.is_err());
+        });
+
+        assert!(events.is_empty(), "failed register must not emit an event");
+    }
+
+    #[test]
+    fn test_failed_update_emits_no_event() {
+        let (env, _cid, client) = setup();
+        env.mock_all_auths();
+        let owner = Address::generate(&env);
+        let stranger = Address::generate(&env);
+        let id = String::from_str(&env, "agent_1");
+        register(&env, &client, &owner, &id, "A");
+
+        env.set_auths(&[]);
+        let events = capture_events(&env, || {
+            let res = client.try_update_metadata(
+                &stranger,
+                &id,
+                &String::from_str(&env, "Hacked"),
+                &Vec::new(&env),
+            );
+            assert!(res.is_err());
+        });
+
+        assert!(events.is_empty(), "failed update must not emit an event");
     }
 }

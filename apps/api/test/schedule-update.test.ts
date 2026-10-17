@@ -377,7 +377,9 @@ test("PATCH scheduleExpression → scheduler runs at NEW time, not old", async (
   const store = new InMemoryScheduleStore();
   // Initial expression: every hour at minute 0. nextRunAt far in the past so
   // it would be due immediately under the OLD expression.
-  const oldNextRun = "2020-01-01T00:00:00.000Z";
+  // Keep the legacy occurrence within the scheduler's lateness grace window,
+  // so this test remains about schedule edits rather than missed-run policy.
+  const oldNextRun = new Date(Date.now() - 60_000).toISOString();
   const schedule = makeSchedule({
     scheduleExpression: "0 * * * *",
     nextRunAt: oldNextRun,

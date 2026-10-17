@@ -91,6 +91,39 @@ test("Scheduler: multiple missed intervals are coalesced into one skipped run", 
   assert.ok(Date.parse((await store.get(schedule.id))!.nextRunAt) > now.getTime());
 });
 
+test("Scheduler: pauses a stale schedule when its expression cannot advance", async () => {
+  const store = new InMemoryScheduleStore();
+  const now = new Date("2099-01-01T00:00:00.000Z");
+  const staleNextRunAt = "2098-12-31T23:00:00.000Z";
+  const schedule = makeSchedule({
+    id: "invalid-stale-expression",
+    scheduleExpression: "not a cron expression",
+    nextRunAt: staleNextRunAt,
+  });
+  const nonAdvancing = makeSchedule({
+    id: "non-advancing-stale-expression",
+    scheduleExpression: "* * * * *",
+    nextRunAt: staleNextRunAt,
+  });
+  await store.create(schedule);
+  await store.create(nonAdvancing);
+
+  let executed = 0;
+  const scheduler = new AgentScheduler(store, agentStore, async () => { executed++; }, { maxLatenessMs: 60_000 });
+
+  assert.equal(await scheduler.runDue(now.toISOString()), 0);
+  for (const id of [schedule.id, nonAdvancing.id]) {
+    const paused = await store.get(id);
+    assert.equal(paused?.status, "paused");
+    assert.equal(paused?.nextRunAt, staleNextRunAt);
+    assert.equal(paused?.lastRunAt, now.toISOString());
+  }
+  assert.equal(executed, 0);
+
+  assert.equal(await scheduler.runDue(new Date(now.getTime() + 60_000).toISOString()), 0);
+  assert.equal(executed, 0);
+});
+
 test("Scheduler: due-now schedule still executes within the lateness window", async () => {
   const store = new InMemoryScheduleStore();
   const now = new Date().toISOString();
