@@ -5,6 +5,8 @@ import { DevAuthProvider } from "@4evergent/shared";
 import { InMemoryExecutionStore, InMemoryActivityStore, InMemoryApprovalStore, InMemoryScheduleStore, InMemoryAgentStore } from "@4evergent/database";
 import type { ExecutionRecord } from "@4evergent/database";
 
+import { ExecutionQueue } from "../src/execution-queue.js";
+
 function makeExecution(overrides: Partial<ExecutionRecord> = {}): ExecutionRecord {
   const now = new Date().toISOString();
   return {
@@ -30,8 +32,8 @@ function makeExecution(overrides: Partial<ExecutionRecord> = {}): ExecutionRecor
   };
 }
 
-async function startServer() {
-  const executionStore = new InMemoryExecutionStore();
+async function startServer(customQueue?: ExecutionQueue, customExecutionStore?: InMemoryExecutionStore) {
+  const executionStore = customExecutionStore ?? new InMemoryExecutionStore();
   const activityStore = new InMemoryActivityStore();
   const approvalStore = new InMemoryApprovalStore();
   const scheduleStore = new InMemoryScheduleStore();
@@ -51,12 +53,12 @@ async function startServer() {
     executionStore,
     agentStore,
     authProvider: new DevAuthProvider({ defaultOwnerId: "owner-a" }),
-    executionQueue: { enabled: true, intervalMs: 60000 },
+    executionQueue: customQueue ? { enabled: true, instance: customQueue } : { enabled: true, intervalMs: 60000 },
   });
 
   await server.listen(0);
   const baseUrl = `http://127.0.0.1:${(server.server.address() as any).port}`;
-  return { baseUrl, close: () => server.close(), executionStore };
+  return { baseUrl, close: () => server.close(), executionStore, activityStore };
 }
 
 test("POST /executions/:id/retry — failed → queued", async () => {
@@ -201,6 +203,116 @@ test("POST /executions/:id/cancel — executing → cancelled", async () => {
     assert.equal(res.status, 200);
     const body = await res.json();
     assert.equal(body.execution.status, "cancelled");
+  } finally {
+    await close();
+  }
+});
+
+test("POST /executions/:id/cancel — cancels running in-flight execution and prevents transaction submission", async () => {
+  const executionStore = new InMemoryExecutionStore();
+  let txSubmitted = false;
+  let resolveRunning: () => void;
+  const runningPromise = new Promise<void>((r) => {
+    resolveRunning = r;
+  });
+
+  const customQueue = new ExecutionQueue(executionStore, async (rec, ctx) => {
+    resolveRunning();
+    await new Promise((r) => setTimeout(r, 60));
+
+    if (ctx?.signal.aborted) {
+      const err = new Error("Execution was cancelled");
+      err.name = "AbortError";
+      throw err;
+    }
+    await ctx?.onBeforeSubmit?.();
+    if (ctx?.signal.aborted) {
+      const err = new Error("Execution was cancelled");
+      err.name = "AbortError";
+      throw err;
+    }
+
+    txSubmitted = true;
+    ctx?.onSubmitted?.("tx-999");
+    return { record: rec, success: true, status: "submitted", txHash: "tx-999" };
+  });
+
+  const { baseUrl, close } = await startServer(customQueue, executionStore);
+  try {
+    const execution = makeExecution({ status: "queued", nextRetryAt: "2026-01-01T00:00:00Z" });
+    await executionStore.record(execution);
+
+    const processPromise = customQueue.processDue("2026-01-01T00:00:01Z");
+    await runningPromise;
+
+    // Issue cancel while pipeline is in progress
+    const res = await fetch(`${baseUrl}/executions/${execution.id}/cancel`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.execution.status, "cancelled");
+    assert.equal(body.execution.error, "cancelled by user");
+
+    await processPromise;
+
+    // Transaction submission must NOT have happened
+    assert.equal(txSubmitted, false, "transaction submission must not happen after cancellation");
+
+    const final = await executionStore.get(execution.id);
+    assert.equal(final?.status, "cancelled");
+    assert.equal(final?.txHash, null);
+  } finally {
+    await close();
+  }
+});
+
+test("POST /executions/:id/cancel — rejects cancellation once in-flight execution is in submitting phase", async () => {
+  const executionStore = new InMemoryExecutionStore();
+  let resolveSubmitting: () => void;
+  const submittingPromise = new Promise<void>((r) => {
+    resolveSubmitting = r;
+  });
+  let resolveFinishSubmit: () => void;
+  const finishSubmitPromise = new Promise<void>((r) => {
+    resolveFinishSubmit = r;
+  });
+
+  const customQueue = new ExecutionQueue(executionStore, async (rec, ctx) => {
+    await ctx?.onBeforeSubmit?.();
+    resolveSubmitting();
+
+    await finishSubmitPromise;
+    ctx?.onSubmitted?.("tx-submitted-888");
+    return { record: rec, success: true, status: "submitted", txHash: "tx-submitted-888" };
+  });
+
+  const { baseUrl, close } = await startServer(customQueue, executionStore);
+  try {
+    const execution = makeExecution({ status: "queued", nextRetryAt: "2026-01-01T00:00:00Z" });
+    await executionStore.record(execution);
+
+    const processPromise = customQueue.processDue("2026-01-01T00:00:01Z");
+    await submittingPromise;
+
+    // Cancel while in submitting phase
+    const res = await fetch(`${baseUrl}/executions/${execution.id}/cancel`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    assert.equal(res.status, 409);
+    const body = await res.json();
+    assert.match(body.error, /cannot cancel execution/);
+
+    resolveFinishSubmit();
+    await processPromise;
+
+    const final = await executionStore.get(execution.id);
+    assert.equal(final?.status, "submitted");
+    assert.equal(final?.txHash, "tx-submitted-888");
   } finally {
     await close();
   }

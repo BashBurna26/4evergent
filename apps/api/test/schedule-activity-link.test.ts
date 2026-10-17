@@ -118,11 +118,11 @@ test("SCHEDULE ACTIVITY TEST 4: no duplicate ActivityRecord after pipeline runs"
     const schedule = makeSchedule();
     await scheduleStore.create(schedule);
 
-    // Wait for execution to reach a terminal state
+    // Wait for execution to reach a terminal state (Horizon network call takes ~6s)
     await waitFor(async () => {
       const recs = await executionStore.listByAgent(schedule.agentId);
       return findExecution(recs, "submitted") ?? findExecution(recs, "dead_letter") ?? findExecution(recs, "failed");
-    }, 2000);
+    }, 15000);
 
     // There should be exactly ONE ActivityRecord for this schedule's execution
     const allActivities = await activityStore.listByAgent(schedule.agentId);
