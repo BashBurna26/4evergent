@@ -17,8 +17,8 @@ export interface ScheduleRecord {
 export interface ScheduleStore {
   create(record: ScheduleRecord): Promise<ScheduleRecord>;
   get(id: string): Promise<ScheduleRecord | null>;
-  listByAgent(agentId: string, limit?: number): Promise<ScheduleRecord[]>;
-  listByOwner(ownerId: string, limit?: number): Promise<ScheduleRecord[]>;
+  listByAgent(agentId: string, limit?: number, offset?: number): Promise<ScheduleRecord[]>;
+  listByOwner(ownerId: string, limit?: number, offset?: number): Promise<ScheduleRecord[]>;
   listDue(before: string, limit?: number): Promise<ScheduleRecord[]>;
   update(id: string, patch: Partial<ScheduleRecord>): Promise<ScheduleRecord | null>;
   delete(id: string): Promise<boolean>;

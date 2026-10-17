@@ -1,60 +1,11 @@
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { createApiServer, clearAgents } from "../src/index.js";
+import { clearAgents } from "../src/index.js";
 import { AgentScheduler } from "../src/scheduler.js";
-import { DevAuthProvider } from "@4evergent/shared";
 import { InMemoryScheduleStore } from "@4evergent/database";
-import type { ScheduleStore, ScheduleRecord } from "@4evergent/database";
-import type { Signer } from "@4evergent/stellar";
-import type { AddressInfo } from "node:net";
+import type { ScheduleRecord } from "@4evergent/database";
 import crypto from "node:crypto";
-
-declare const fetch: typeof globalThis.fetch;
-
-async function apiFetch(url: string, init?: RequestInit) {
-  return fetch(url, { ...init, keepalive: false });
-}
-
-class MockSigner implements Signer {
-  private id: string;
-  constructor(id: string) {
-    this.id = id.startsWith("G") ? id : `G${id.padEnd(55, "A").slice(0, 55)}`;
-  }
-  getAccountId(): string { return this.id; }
-  getNetworkPassphrase(): string { return "Test SDF Network ; September 2015"; }
-  async sign(transaction: any): Promise<any> {
-    transaction.signatures = [{ hint: Buffer.from("mock"), signature: Buffer.from("sig") }];
-    return transaction;
-  }
-}
-
-const TEST_AGENT = {
-  id: "test-agent",
-  displayName: "Test Agent",
-  description: "test agent",
-  ownerId: "test",
-  stellarAddress: "GDAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-  capabilities: ["payment"],
-  status: "active" as const,
-  createdAt: new Date().toISOString(),
-  updatedAt: new Date().toISOString(),
-  active: true,
-  metadata: {},
-};
-
-const _TEST_AGENT_B = {
-  id: "agent-b",
-  displayName: "Agent B",
-  description: "test agent b",
-  ownerId: "owner-b",
-  stellarAddress: "GDAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-  capabilities: ["payment"],
-  status: "active" as const,
-  createdAt: new Date().toISOString(),
-  updatedAt: new Date().toISOString(),
-  active: true,
-  metadata: {},
-};
+import { startServer, apiFetch } from "./helpers.js";
 
 function makeSchedule(overrides: Partial<ScheduleRecord> = {}): ScheduleRecord {
   const now = new Date().toISOString();
@@ -80,65 +31,9 @@ function makeSchedule(overrides: Partial<ScheduleRecord> = {}): ScheduleRecord {
   };
 }
 
-async function startServer(scheduleStore?: ScheduleStore, registerAgent = true) {
-  const server = await createApiServer({
-    port: 0,
-    horizonUrl: "https://horizon-testnet.stellar.org",
-    signer: new MockSigner("test-agent"),
-    policyRules: { maxTxAmount: { XLM: "1000" } },
-    deferExecution: true,
-    authProvider: new DevAuthProvider({ defaultOwnerId: "test" }),
-    scheduleStore: scheduleStore ?? new InMemoryScheduleStore(),
-  });
-
-  if (registerAgent !== false) {
-    server.registerAgent(TEST_AGENT);
-  }
-
-  return new Promise<{
-    baseUrl: string;
-    close: () => Promise<void>;
-    scheduleStore: ScheduleStore;
-  }>((resolve) => {
-    const http = server.server.listen(0, "127.0.0.1", () => {
-      const addr = http.address() as AddressInfo;
-      resolve({
-        baseUrl: `http://127.0.0.1:${addr.port}`,
-        close: () => server.close(),
-        scheduleStore: scheduleStore ?? new InMemoryScheduleStore(),
-      });
-    });
-  });
-}
-
-async function _startServerForOwner(ownerId: string, agentOwner: any) {
-  const scheduleStore = new InMemoryScheduleStore();
-  const server = await createApiServer({
-    port: 0,
-    horizonUrl: "https://horizon-testnet.stellar.org",
-    signer: new MockSigner("test-agent"),
-    policyRules: { maxTxAmount: { XLM: "1000" } },
-    deferExecution: true,
-    authProvider: new DevAuthProvider({ defaultOwnerId: ownerId }),
-    scheduleStore,
-  });
-  server.registerAgent(agentOwner);
-
-  return new Promise<{
-    baseUrl: string;
-    close: () => Promise<void>;
-    scheduleStore: ScheduleStore;
-  }>((resolve) => {
-    const http = server.server.listen(0, "127.0.0.1", () => {
-      const addr = http.address() as AddressInfo;
-      resolve({
-        baseUrl: `http://127.0.0.1:${addr.port}`,
-        close: () => server.close(),
-        scheduleStore,
-      });
-    });
-  });
-}
+// Local helpers removed — provided by the shared harness (issue #86).
+// The previous local `startServer(scheduleStore?, registerAgent = true)`
+// maps to `startServer({ scheduleStore, registerAgent, policyRules, deferExecution })`.
 
 async function patchSchedule(baseUrl: string, agentId: string, scheduleId: string, body: unknown) {
   const res = await apiFetch(`${baseUrl}/agents/${encodeURIComponent(agentId)}/schedules/${encodeURIComponent(scheduleId)}`, {
@@ -164,7 +59,7 @@ test("PATCH /agents/:id/schedules/:id — valid update returns 200 and updated s
   const schedule = makeSchedule({ scheduleExpression: "0 * * * *" });
   await store.create(schedule);
 
-  const { baseUrl, close, _scheduleStore } = await startServer(store);
+  const { baseUrl, close } = await startServer({ scheduleStore: store, policyRules: { maxTxAmount: { XLM: "1000" } }, deferExecution: true });
 
   try {
     const res = await patchSchedule(baseUrl, "test-agent", schedule.id, { scheduleExpression: "*/5 * * * *" });
@@ -185,7 +80,7 @@ test("PATCH /agents/:id/schedules/:id — invalid cron expression returns 400 an
   const schedule = makeSchedule({ scheduleExpression: "0 * * * *" });
   await store.create(schedule);
 
-  const { baseUrl, close, scheduleStore } = await startServer(store);
+  const { baseUrl, close, scheduleStore } = await startServer({ scheduleStore: store, policyRules: { maxTxAmount: { XLM: "1000" } }, deferExecution: true });
 
   try {
     const res = await patchSchedule(baseUrl, "test-agent", schedule.id, { scheduleExpression: "invalid" });
@@ -220,7 +115,7 @@ test("PATCH /agents/:id/schedules/:id — cross-owner update returns 404 and doe
 
   // Server authenticated as owner-a but with owner-b's schedule store
   // Owner A does NOT have access to agent-b
-  const { baseUrl, close, scheduleStore } = await startServer(storeB);
+  const { baseUrl, close, scheduleStore } = await startServer({ scheduleStore: storeB, policyRules: { maxTxAmount: { XLM: "1000" } }, deferExecution: true });
 
   try {
     // Owner A attempts to PATCH owner B's schedule via agent-b path
@@ -245,7 +140,7 @@ test("PATCH /agents/:id/schedules/:id — owner can update own schedule regardle
   const schedule = makeSchedule({ agentId: "test-agent", ownerId: "test" });
   await store.create(schedule);
 
-  const { baseUrl, close, scheduleStore } = await startServer(store);
+  const { baseUrl, close, scheduleStore } = await startServer({ scheduleStore: store, policyRules: { maxTxAmount: { XLM: "1000" } }, deferExecution: true });
 
   try {
     // URL uses "some-other-agent" (not registered), but the schedule is owned by "test"
@@ -265,7 +160,7 @@ test("PATCH /agents/:id/schedules/:id — nextRunAt recalculated with new expres
   const schedule = makeSchedule({ scheduleExpression: "0 0 * * *", nextRunAt: "2099-01-01T00:00:00Z" });
   await store.create(schedule);
 
-  const { baseUrl, close, scheduleStore } = await startServer(store);
+  const { baseUrl, close, scheduleStore } = await startServer({ scheduleStore: store, policyRules: { maxTxAmount: { XLM: "1000" } }, deferExecution: true });
 
   try {
     const res = await patchSchedule(baseUrl, "test-agent", schedule.id, { scheduleExpression: "0 * * * *" });
@@ -296,7 +191,7 @@ test("PATCH /agents/:id/schedules/:id — id, agentId, ownerId, intent, timezone
   });
   await store.create(schedule);
 
-  const { baseUrl, close, scheduleStore } = await startServer(store);
+  const { baseUrl, close, scheduleStore } = await startServer({ scheduleStore: store, policyRules: { maxTxAmount: { XLM: "1000" } }, deferExecution: true });
 
   try {
     const res = await patchSchedule(baseUrl, "test-agent", schedule.id, { scheduleExpression: "*/5 * * * *" });
@@ -321,7 +216,7 @@ test("PATCH /agents/:id/schedules/:id — empty scheduleExpression returns 400",
   const schedule = makeSchedule();
   await store.create(schedule);
 
-  const { baseUrl, close, scheduleStore } = await startServer(store);
+  const { baseUrl, close, scheduleStore } = await startServer({ scheduleStore: store, policyRules: { maxTxAmount: { XLM: "1000" } }, deferExecution: true });
 
   try {
     const res = await patchSchedule(baseUrl, "test-agent", schedule.id, { scheduleExpression: "" });
@@ -340,7 +235,7 @@ test("PATCH /agents/:id/schedules/:id — patch without scheduleExpression retur
   const schedule = makeSchedule({ scheduleExpression: "0 * * * *" });
   await store.create(schedule);
 
-  const { baseUrl, close } = await startServer(store);
+  const { baseUrl, close } = await startServer({ scheduleStore: store, policyRules: { maxTxAmount: { XLM: "1000" } }, deferExecution: true });
 
   try {
     const res = await patchSchedule(baseUrl, "test-agent", schedule.id, {});
@@ -357,7 +252,7 @@ test("PATCH /agents/:id/schedules/:id — response does not contain secret field
   const schedule = makeSchedule();
   await store.create(schedule);
 
-  const { baseUrl, close } = await startServer(store);
+  const { baseUrl, close } = await startServer({ scheduleStore: store, policyRules: { maxTxAmount: { XLM: "1000" } }, deferExecution: true });
 
   try {
     const res = await patchSchedule(baseUrl, "test-agent", schedule.id, { scheduleExpression: "*/5 * * * *" });
@@ -377,14 +272,16 @@ test("PATCH scheduleExpression → scheduler runs at NEW time, not old", async (
   const store = new InMemoryScheduleStore();
   // Initial expression: every hour at minute 0. nextRunAt far in the past so
   // it would be due immediately under the OLD expression.
-  const oldNextRun = "2020-01-01T00:00:00.000Z";
+  // Keep the legacy occurrence within the scheduler's lateness grace window,
+  // so this test remains about schedule edits rather than missed-run policy.
+  const oldNextRun = new Date(Date.now() - 60_000).toISOString();
   const schedule = makeSchedule({
     scheduleExpression: "0 * * * *",
     nextRunAt: oldNextRun,
   });
   await store.create(schedule);
 
-  const { baseUrl, close } = await startServer(store);
+  const { baseUrl, close } = await startServer({ scheduleStore: store, policyRules: { maxTxAmount: { XLM: "1000" } }, deferExecution: true });
 
   const executed: string[] = [];
   const scheduler = new AgentScheduler(
@@ -411,20 +308,22 @@ test("PATCH scheduleExpression → scheduler runs at NEW time, not old", async (
     assert.ok(afterFirstRun!.lastRunAt, "lastRunAt should be set after first run");
 
     // --- Step 2: PATCH via the production handler ---
-    // New expression: every minute ("* * * * *") — will be due within a minute.
-    const res = await patchSchedule(baseUrl, "test-agent", schedule.id, { scheduleExpression: "* * * * *" });
+    // New expression: at minute 30 of each hour. This cannot coincide with
+    // the old expression's top-of-hour occurrence, unlike an every-minute
+    // schedule when the test happens to run just before the hour.
+    const res = await patchSchedule(baseUrl, "test-agent", schedule.id, { scheduleExpression: "30 * * * *" });
     assert.equal(res.status, 200);
-    assert.equal(res.body.schedule.scheduleExpression, "* * * * *");
+    assert.equal(res.body.schedule.scheduleExpression, "30 * * * *");
 
     // --- Step 3: Verify production logic recalculated nextRunAt ---
     // The PATCH handler computed this from the NEW expression — no manual injection.
     const patched = await store.get(schedule.id);
     assert.ok(patched, "schedule should exist after PATCH");
-    assert.equal(patched!.scheduleExpression, "* * * * *");
+    assert.equal(patched!.scheduleExpression, "30 * * * *");
     assert.notEqual(patched!.nextRunAt, afterFirstRun!.nextRunAt, "nextRunAt must differ after PATCH (recalculated from new expression)");
-    // New expression fires every minute → nextRunAt within ~60s of now.
+    // New expression fires at the next half-hour boundary, within an hour.
     const drift = new Date(patched!.nextRunAt).getTime() - Date.now();
-    assert.ok(drift > 0 && drift <= 60_000, `nextRunAt should be within 60s in the future (got ${drift}ms)`);
+    assert.ok(drift > 0 && drift <= 60 * 60_000, `nextRunAt should be within an hour in the future (got ${drift}ms)`);
 
     // --- Step 4: Scheduler uses the NEW persisted nextRunAt ---
     // Time just BEFORE the new nextRunAt → schedule must NOT be due.

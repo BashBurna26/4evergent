@@ -7,6 +7,7 @@ import type {
   SimulationResult,
 } from "@4evergent/shared";
 import { getSharedConnection } from "./shared-connection.js";
+import { clampOffset, clampLimit } from "./pagination.js";
 import type {
   ActivityStore,
   ApprovalStore,
@@ -109,31 +110,31 @@ export class SQLiteActivityStore implements ActivityStore {
     return row ? rowToActivityRecord(row as unknown as ActivityRow) : null;
   }
 
-  async listByAgent(agentId: string, limit = 50): Promise<ActivityRecord[]> {
+  async listByAgent(agentId: string, limit = 50, offset = 0): Promise<ActivityRecord[]> {
     const rows = this.db
-      .prepare("SELECT * FROM activities WHERE agent_id = ? ORDER BY created_at DESC LIMIT ?")
-      .all(agentId, limit);
+      .prepare("SELECT * FROM activities WHERE agent_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?")
+      .all(agentId, clampLimit(limit), clampOffset(offset));
     return rows.map((r) => rowToActivityRecord(r as unknown as ActivityRow));
   }
 
-  async listByStatus(agentId: string, status: string, limit = 50): Promise<ActivityRecord[]> {
+  async listByStatus(agentId: string, status: string, limit = 50, offset = 0): Promise<ActivityRecord[]> {
     const rows = this.db
-      .prepare("SELECT * FROM activities WHERE agent_id = ? AND status = ? ORDER BY created_at DESC LIMIT ?")
-      .all(agentId, status, limit);
+      .prepare("SELECT * FROM activities WHERE agent_id = ? AND status = ? ORDER BY created_at DESC LIMIT ? OFFSET ?")
+      .all(agentId, status, clampLimit(limit), clampOffset(offset));
     return rows.map((r) => rowToActivityRecord(r as unknown as ActivityRow));
   }
 
-  async listAll(limit = 50): Promise<ActivityRecord[]> {
+  async listAll(limit = 50, offset = 0): Promise<ActivityRecord[]> {
     const rows = this.db
-      .prepare("SELECT * FROM activities ORDER BY created_at DESC LIMIT ?")
-      .all(limit);
+      .prepare("SELECT * FROM activities ORDER BY created_at DESC LIMIT ? OFFSET ?")
+      .all(clampLimit(limit), clampOffset(offset));
     return rows.map((r) => rowToActivityRecord(r as unknown as ActivityRow));
   }
 
-  async listByOwner(ownerId: string, limit = 50): Promise<ActivityRecord[]> {
+  async listByOwner(ownerId: string, limit = 50, offset = 0): Promise<ActivityRecord[]> {
     const rows = this.db
-      .prepare("SELECT * FROM activities WHERE owner_id = ? ORDER BY created_at DESC LIMIT ?")
-      .all(ownerId, limit);
+      .prepare("SELECT * FROM activities WHERE owner_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?")
+      .all(ownerId, clampLimit(limit), clampOffset(offset));
     return rows.map((r) => rowToActivityRecord(r as unknown as ActivityRow));
   }
 
@@ -419,34 +420,60 @@ export class SQLiteApprovalStore implements ApprovalStore {
     return rowToApprovalRecord(row as unknown as ApprovalRow);
   }
 
-  async listByAgent(agentId: string, limit = 50): Promise<ApprovalRecord[]> {
+  async listByAgent(agentId: string, limit = 50, offset = 0, status?: string): Promise<ApprovalRecord[]> {
+    const safeOffset = clampOffset(offset);
+    if (status === undefined) {
+      const rows = this.db
+        .prepare("SELECT * FROM approvals WHERE agent_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?")
+        .all(agentId, clampLimit(limit), safeOffset);
+      return rows.map((r) => rowToApprovalRecord(r as unknown as ApprovalRow));
+    }
     const rows = this.db
-      .prepare("SELECT * FROM approvals WHERE agent_id = ? ORDER BY created_at DESC LIMIT ?")
-      .all(agentId, limit);
+      .prepare("SELECT * FROM approvals WHERE agent_id = ? AND status = ? ORDER BY created_at DESC LIMIT ? OFFSET ?")
+      .all(agentId, status, clampLimit(limit), safeOffset);
     return rows.map((r) => rowToApprovalRecord(r as unknown as ApprovalRow));
   }
 
-  async listByStatus(agentId: string, status: string, limit = 50): Promise<ApprovalRecord[]> {
+  async listByStatus(agentId: string, status: string, limit = 50, offset = 0): Promise<ApprovalRecord[]> {
     const rows = this.db
       .prepare(
-        "SELECT * FROM approvals WHERE agent_id = ? AND status = ? ORDER BY created_at DESC LIMIT ?"
+        "SELECT * FROM approvals WHERE agent_id = ? AND status = ? ORDER BY created_at DESC LIMIT ? OFFSET ?"
       )
-      .all(agentId, status, limit);
+      .all(agentId, status, clampLimit(limit), clampOffset(offset));
     return rows.map((r) => rowToApprovalRecord(r as unknown as ApprovalRow));
   }
 
-  async listAll(limit = 50): Promise<ApprovalRecord[]> {
+  async listAll(limit = 50, offset = 0): Promise<ApprovalRecord[]> {
     const rows = this.db
-      .prepare("SELECT * FROM approvals ORDER BY created_at DESC LIMIT ?")
-      .all(limit);
+      .prepare("SELECT * FROM approvals ORDER BY created_at DESC LIMIT ? OFFSET ?")
+      .all(clampLimit(limit), clampOffset(offset));
     return rows.map((r) => rowToApprovalRecord(r as unknown as ApprovalRow));
   }
 
-  async listByOwner(ownerId: string, limit = 50): Promise<ApprovalRecord[]> {
+  async listByOwner(ownerId: string, limit = 50, offset = 0, status?: string): Promise<ApprovalRecord[]> {
+    const safeOffset = clampOffset(offset);
+    if (status === undefined) {
+      const rows = this.db
+        .prepare("SELECT * FROM approvals WHERE owner_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?")
+        .all(ownerId, clampLimit(limit), safeOffset);
+      return rows.map((r) => rowToApprovalRecord(r as unknown as ApprovalRow));
+    }
     const rows = this.db
-      .prepare("SELECT * FROM approvals WHERE owner_id = ? ORDER BY updated_at DESC LIMIT ?")
-      .all(ownerId, limit);
+      .prepare("SELECT * FROM approvals WHERE owner_id = ? AND status = ? ORDER BY created_at DESC LIMIT ? OFFSET ?")
+      .all(ownerId, status, clampLimit(limit), safeOffset);
     return rows.map((r) => rowToApprovalRecord(r as unknown as ApprovalRow));
+  }
+
+  async countByOwner(ownerId: string, status?: string): Promise<number> {
+    const row =
+      status === undefined
+        ? this.db
+            .prepare("SELECT COUNT(*) AS count FROM approvals WHERE owner_id = ?")
+            .get(ownerId)
+        : this.db
+            .prepare("SELECT COUNT(*) AS count FROM approvals WHERE owner_id = ? AND status = ?")
+            .get(ownerId, status);
+    return Number((row as unknown as { count: number | bigint }).count);
   }
 
   async getForOwner(id: string, ownerId: string): Promise<ApprovalRecord | null> {

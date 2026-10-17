@@ -6,6 +6,7 @@ import type {
   SimulationResult,
   ScheduleStatus,
 } from "@4evergent/shared";
+import { clampOffset, clampLimit } from "./pagination.js";
 
 /**
  * ActivityStore — persistence interface for the transaction activity log.
@@ -18,10 +19,10 @@ import type {
 export interface ActivityStore {
   record(record: ActivityRecord): Promise<void>;
   get(id: string): Promise<ActivityRecord | null>;
-  listByAgent(agentId: string, limit?: number): Promise<ActivityRecord[]>;
-  listByStatus(agentId: string, status: string, limit?: number): Promise<ActivityRecord[]>;
-  listAll(limit?: number): Promise<ActivityRecord[]>;
-  listByOwner(ownerId: string, limit?: number): Promise<ActivityRecord[]>;
+  listByAgent(agentId: string, limit?: number, offset?: number): Promise<ActivityRecord[]>;
+  listByStatus(agentId: string, status: string, limit?: number, offset?: number): Promise<ActivityRecord[]>;
+  listAll(limit?: number, offset?: number): Promise<ActivityRecord[]>;
+  listByOwner(ownerId: string, limit?: number, offset?: number): Promise<ActivityRecord[]>;
   getForOwner(id: string, ownerId: string): Promise<ActivityRecord | null>;
   update(id: string, patch: Partial<ActivityRecord>): Promise<ActivityRecord | null>;
   getByIdempotencyKey(ownerId: string, agentId: string, key: string): Promise<ActivityRecord | null>;
@@ -50,10 +51,16 @@ export interface ActivityStore {
 export interface ApprovalStore {
   record(record: ApprovalRecord): Promise<void>;
   get(id: string): Promise<ApprovalRecord | null>;
-  listByAgent(agentId: string, limit?: number): Promise<ApprovalRecord[]>;
-  listByStatus(agentId: string, status: string, limit?: number): Promise<ApprovalRecord[]>;
-  listAll(limit?: number): Promise<ApprovalRecord[]>;
-  listByOwner(ownerId: string, limit?: number): Promise<ApprovalRecord[]>;
+  /** List approvals for an agent. `status` filters at the store level so that
+   *  `offset`/`limit` page over the FILTERED set, not the unfiltered one. */
+  listByAgent(agentId: string, limit?: number, offset?: number, status?: string): Promise<ApprovalRecord[]>;
+  listByStatus(agentId: string, status: string, limit?: number, offset?: number): Promise<ApprovalRecord[]>;
+  listAll(limit?: number, offset?: number): Promise<ApprovalRecord[]>;
+  /** List approvals for an owner. `status` filters at the store level (see listByAgent). */
+  listByOwner(ownerId: string, limit?: number, offset?: number, status?: string): Promise<ApprovalRecord[]>;
+  /** Count approvals for an owner. `status` filters at the store level (see listByOwner).
+   *  Unlike list*, this is never capped, so callers get the true total. */
+  countByOwner(ownerId: string, status?: string): Promise<number>;
   getForOwner(id: string, ownerId: string): Promise<ApprovalRecord | null>;
   update(id: string, patch: Partial<ApprovalRecord>): Promise<ApprovalRecord | null>;
 }
@@ -112,31 +119,31 @@ export class InMemoryActivityStore implements ActivityStore {
     return this.records.get(id) ?? null;
   }
 
-  async listByAgent(agentId: string, limit = 50): Promise<ActivityRecord[]> {
+  async listByAgent(agentId: string, limit = 50, offset = 0): Promise<ActivityRecord[]> {
     return [...this.records.values()]
       .filter((r) => r.agentId === agentId)
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-      .slice(0, limit);
+      .slice(clampOffset(offset), clampOffset(offset) + clampLimit(limit));
   }
 
-  async listByStatus(agentId: string, status: string, limit = 50): Promise<ActivityRecord[]> {
+  async listByStatus(agentId: string, status: string, limit = 50, offset = 0): Promise<ActivityRecord[]> {
     return [...this.records.values()]
       .filter((r) => r.agentId === agentId && r.status === status)
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-      .slice(0, limit);
+      .slice(clampOffset(offset), clampOffset(offset) + clampLimit(limit));
   }
 
-  async listAll(limit = 50): Promise<ActivityRecord[]> {
+  async listAll(limit = 50, offset = 0): Promise<ActivityRecord[]> {
     return [...this.records.values()]
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-      .slice(0, limit);
+      .slice(clampOffset(offset), clampOffset(offset) + clampLimit(limit));
   }
 
-  async listByOwner(ownerId: string, limit = 50): Promise<ActivityRecord[]> {
+  async listByOwner(ownerId: string, limit = 50, offset = 0): Promise<ActivityRecord[]> {
     return [...this.records.values()]
       .filter((r) => r.ownerId === ownerId)
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-      .slice(0, limit);
+      .slice(clampOffset(offset), clampOffset(offset) + clampLimit(limit));
   }
 
   async getForOwner(id: string, ownerId: string): Promise<ActivityRecord | null> {
@@ -244,31 +251,43 @@ export class InMemoryApprovalStore implements ApprovalStore {
     return this.records.get(id) ?? null;
   }
 
-  async listByAgent(agentId: string, limit = 50): Promise<ApprovalRecord[]> {
+  async listByAgent(agentId: string, limit = 50, offset = 0, status?: string): Promise<ApprovalRecord[]> {
+    const safeOffset = clampOffset(offset);
     return [...this.records.values()]
-      .filter((r) => r.agentId === agentId)
+      .filter((r) => r.agentId === agentId && (status === undefined || r.status === status))
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-      .slice(0, limit);
+      .slice(safeOffset, safeOffset + clampLimit(limit));
   }
 
-  async listByStatus(agentId: string, status: string, limit = 50): Promise<ApprovalRecord[]> {
+  async listByStatus(agentId: string, status: string, limit = 50, offset = 0): Promise<ApprovalRecord[]> {
+    const safeOffset = clampOffset(offset);
     return [...this.records.values()]
       .filter((r) => r.agentId === agentId && r.status === status)
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-      .slice(0, limit);
+      .slice(safeOffset, safeOffset + clampLimit(limit));
   }
 
-  async listAll(limit = 50): Promise<ApprovalRecord[]> {
+  async listAll(limit = 50, offset = 0): Promise<ApprovalRecord[]> {
+    const safeOffset = clampOffset(offset);
     return [...this.records.values()]
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-      .slice(0, limit);
+      .slice(safeOffset, safeOffset + clampLimit(limit));
   }
 
-  async listByOwner(ownerId: string, limit = 50): Promise<ApprovalRecord[]> {
+  async listByOwner(ownerId: string, limit = 50, offset = 0, status?: string): Promise<ApprovalRecord[]> {
+    const safeOffset = clampOffset(offset);
     return [...this.records.values()]
-      .filter((r) => r.ownerId === ownerId)
+      .filter((r) => r.ownerId === ownerId && (status === undefined || r.status === status))
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-      .slice(0, limit);
+      .slice(safeOffset, safeOffset + clampLimit(limit));
+  }
+
+  async countByOwner(ownerId: string, status?: string): Promise<number> {
+    let n = 0;
+    for (const r of this.records.values()) {
+      if (r.ownerId === ownerId && (status === undefined || r.status === status)) n++;
+    }
+    return n;
   }
 
   async getForOwner(id: string, ownerId: string): Promise<ApprovalRecord | null> {
@@ -450,3 +469,6 @@ export {
   closeSharedConnection,
   closeAllSharedConnections,
 } from "./shared-connection.js";
+
+// Pagination bounds (shared by every list* store method)
+export { MAX_OFFSET, MAX_PAGE_LIMIT, clampOffset, clampLimit, isOffsetAtCeiling } from "./pagination.js";
