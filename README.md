@@ -149,6 +149,7 @@ node apps/api/dist/server.js
 ```
 
 The server starts on `http://localhost:3000`. See [docs/testnet.md](docs/testnet.md) for the full Testnet workflow including funding, simulation, and live submission (`LIVE_SUBMIT=1`).
+For startup failures and connection troubleshooting, see [docs/troubleshooting.md](docs/troubleshooting.md).
 
 ### Watch the API server (edit → reload)
 
@@ -190,7 +191,7 @@ export STELLAR_HORIZON_URL=https://horizon-testnet.stellar.org
 #   curl "https://friendbot.stellar.org?addr=<PUBLIC_KEY>"
 ```
 
-The MVP is validated against the testnet Horizon API. See [docs/testnet.md](docs/testnet.md) for details.
+The MVP is validated against the testnet Horizon API. See [docs/testnet.md](docs/testnet.md) for details, and [docs/troubleshooting.md](docs/troubleshooting.md) for startup and connectivity issues.
 
 ## Adding a new agent capability
 
