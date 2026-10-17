@@ -29,6 +29,12 @@ supported: email+password, Google OAuth, and Stellar wallet signature.
 CSRF protection: cookie-authenticated state-changing requests must carry
 the `X-Requested-With` header. Bearer/API-key requests are unaffected.
 
+The design decisions behind this model — cookie vs token, the three providers
+and their separation from `API_KEYS` machine auth, the Stellar challenge
+binding, the single-process in-memory state, and session persistence — are
+recorded as ADRs 016–019 in [architecture.md](architecture.md). Rate limiting
+for the login endpoints is ADR-020 (Proposed).
+
 ### GET /auth/config
 
 Public. Returns which login methods the server has enabled:

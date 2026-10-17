@@ -175,7 +175,7 @@ ApprovalRecord {
 
 **Development Identity:** In dev/test, identity is deterministic via `ServerOptions.requestContext: { ownerId }`. No production auth is implemented.
 
-**Known Limitation:** Identity mechanism is abstraction-ready but NOT production-ready. No OAuth/JWT/wallet auth implemented.
+**Known Limitation:** The machine-client bearer path (`API_KEYS`) is production-ready. Browser user authentication IS implemented — three providers (email+password, Stellar wallet signature, Google OAuth) issuing HttpOnly `SameSite` session cookies, see `apps/api/src/auth.ts` and ADRs 016–019 in [architecture.md](architecture.md). Its current limitations: OAuth state and Stellar challenges are in-memory (single API process, ADR-019), registration is open by default (ADR-017), and login endpoints have no rate limiting yet (ADR-020, Proposed).
 
 ## API Authentication (Development vs Production)
 
