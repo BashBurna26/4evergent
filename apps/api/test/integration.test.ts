@@ -238,7 +238,7 @@ test("API rejects unsupported intent type (contract_call)", async () => {
   }
 });
 
-test("API rejects unsupported intent type (account_settings)", async () => {
+test("API accepts account_settings intent (no longer 'not yet supported')", async () => {
   const { baseUrl, close } = await startServer();
   try {
     const res = await post(baseUrl, "/agents/test-agent/intents", {
@@ -247,8 +247,12 @@ test("API rejects unsupported intent type (account_settings)", async () => {
       value: "GDAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
       reason: "test",
     });
-    assert.equal(res.status, 400);
-    assert.ok(res.body.error.includes("not yet supported"));
+    // parseIntent now accepts account_settings — the intent reaches policy
+    // evaluation (may be denied by default policy, but NOT by "not yet supported")
+    assert.ok(
+      !res.body.error?.includes("not yet supported"),
+      `account_settings should not be rejected as 'not yet supported', got: ${res.body.error}`
+    );
   } finally {
     await close();
   }

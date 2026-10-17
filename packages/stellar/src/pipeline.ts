@@ -5,7 +5,7 @@ import type { Signer } from "./signer.js";
 import { PolicyEngine } from "@4evergent/policy";
 import { IntentValidator } from "@4evergent/agent-core";
 import { StellarAdapter } from "@4evergent/agent-core";
-import type { AgentIntent, PolicyDecision, PolicyRules, ActivityRecord } from "@4evergent/shared";
+import type { AgentIntent, AccountSettingsIntent, PolicyDecision, PolicyRules, ActivityRecord } from "@4evergent/shared";
 import {
   createActivity,
   createApproval,
@@ -122,6 +122,8 @@ export class TransactionPipeline {
     try {
       if (intent.type === "trustline") {
         tx = await this.builder.buildTrustline(sourceAccount, intent as any, this.signer.getNetworkPassphrase());
+      } else if (intent.type === "account_settings") {
+        tx = await this.builder.buildAccountSettings(sourceAccount, intent as AccountSettingsIntent, this.signer.getNetworkPassphrase());
       } else {
         tx = await this.builder.buildPayment(sourceAccount, intent as any, this.signer.getNetworkPassphrase());
       }
@@ -313,7 +315,11 @@ export class TransactionPipeline {
 
     let tx;
     try {
-      tx = await this.builder.buildPayment(sourceAccount, intent as any, this.signer.getNetworkPassphrase());
+      if (intent.type === "account_settings") {
+        tx = await this.builder.buildAccountSettings(sourceAccount, intent as AccountSettingsIntent, this.signer.getNetworkPassphrase());
+      } else {
+        tx = await this.builder.buildPayment(sourceAccount, intent as any, this.signer.getNetworkPassphrase());
+      }
     } catch (e: any) {
       await this.approvalStore.update(approvalId, { status: "failed", error: e.message });
       return {

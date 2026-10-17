@@ -9,7 +9,7 @@ A capability is a named, policy-governed action an agent may perform on Stellar.
 | `payment` | `PaymentIntent` | ✅ MVP — validation + policy |
 | `trustline` | `TrustlineIntent` | ✅ MVP — validation + policy |
 | `contract_call` | `ContractCallIntent` | ✅ validation; policy denies by default |
-| `account_settings` | `AccountSettingsIntent` | ✅ validation; policy denies by default |
+| `account_settings` | `AccountSettingsIntent` | ✅ supported — `buildAccountSettings` + `parseIntent` + tests |
 
 ## Stellar Asset Support (Phase 12)
 
@@ -20,7 +20,7 @@ A capability is a named, policy-governed action an agent may perform on Stellar.
 | Create trustline | ✅ Supported | `TrustlineIntent` with `assetCode`, `issuer`, optional `limit` |
 | Path payments | ❌ Not supported | — |
 | Contract invocation | ❌ Not supported | Policy denies by default |
-| Account settings | ❌ Not supported | Policy denies by default |
+| Account settings | ✅ Supported | `AccountSettingsIntent` with `setting` + `value` — `home_domain`, `inflation_destination`, `signer`, `thresholds`, `set_flags`, `clear_flags` |
 | Token issuance | ❌ Not supported | — |
 | Soroban contracts | ⚠️ AgentRegistry deployed on Testnet | Contract exists and is callable directly; the transaction pipeline still does not invoke contracts (`contract_call` policy-denied by default). See `docs/testnet.md`. |
 

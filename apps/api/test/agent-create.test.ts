@@ -248,3 +248,192 @@ test("POST /agents created agent can be used for intent submission", async () =>
     await server.close();
   }
 });
+
+test("POST /agents validation — description too long", async () => {
+  const server = await createApiServer({
+    port: 0,
+    horizonUrl: "https://horizon-testnet.stellar.org",
+    signer: makeSigner("GTEST"),
+    authProvider: new DevAuthProvider({ defaultOwnerId: "owner-a" }),
+  });
+  await server.listen(0);
+  const baseUrl = `http://127.0.0.1:${(server.server.address() as any).port}`;
+  try {
+    const res = await post(`${baseUrl}/agents`, {
+      displayName: "Valid Name",
+      description: "x".repeat(501),
+    });
+    assert.equal(res.status, 400);
+    assert.equal(res.body.error, "description must be 500 characters or fewer");
+  } finally {
+    await server.close();
+  }
+});
+
+test("POST /agents validation — description not a string", async () => {
+  const server = await createApiServer({
+    port: 0,
+    horizonUrl: "https://horizon-testnet.stellar.org",
+    signer: makeSigner("GTEST"),
+    authProvider: new DevAuthProvider({ defaultOwnerId: "owner-a" }),
+  });
+  await server.listen(0);
+  const baseUrl = `http://127.0.0.1:${(server.server.address() as any).port}`;
+  try {
+    const res = await post(`${baseUrl}/agents`, {
+      displayName: "Valid Name",
+      description: 12345,
+    });
+    assert.equal(res.status, 400);
+    assert.equal(res.body.error, "description must be a string");
+  } finally {
+    await server.close();
+  }
+});
+
+test("POST /agents validation — capabilities over count", async () => {
+  const server = await createApiServer({
+    port: 0,
+    horizonUrl: "https://horizon-testnet.stellar.org",
+    signer: makeSigner("GTEST"),
+    authProvider: new DevAuthProvider({ defaultOwnerId: "owner-a" }),
+  });
+  await server.listen(0);
+  const baseUrl = `http://127.0.0.1:${(server.server.address() as any).port}`;
+  try {
+    const caps = Array.from({ length: 33 }, (_, i) => `cap-${i}`);
+    const res = await post(`${baseUrl}/agents`, {
+      displayName: "Valid Name",
+      capabilities: caps,
+    });
+    assert.equal(res.status, 400);
+    assert.equal(res.body.error, "capabilities must be 32 entries or fewer");
+  } finally {
+    await server.close();
+  }
+});
+
+test("POST /agents validation — capability entry over length", async () => {
+  const server = await createApiServer({
+    port: 0,
+    horizonUrl: "https://horizon-testnet.stellar.org",
+    signer: makeSigner("GTEST"),
+    authProvider: new DevAuthProvider({ defaultOwnerId: "owner-a" }),
+  });
+  await server.listen(0);
+  const baseUrl = `http://127.0.0.1:${(server.server.address() as any).port}`;
+  try {
+    const res = await post(`${baseUrl}/agents`, {
+      displayName: "Valid Name",
+      capabilities: ["a".repeat(33)],
+    });
+    assert.equal(res.status, 400);
+    assert.equal(res.body.error, "capability entries must be 32 characters or fewer");
+  } finally {
+    await server.close();
+  }
+});
+
+test("POST /agents validation — empty capability entry", async () => {
+  const server = await createApiServer({
+    port: 0,
+    horizonUrl: "https://horizon-testnet.stellar.org",
+    signer: makeSigner("GTEST"),
+    authProvider: new DevAuthProvider({ defaultOwnerId: "owner-a" }),
+  });
+  await server.listen(0);
+  const baseUrl = `http://127.0.0.1:${(server.server.address() as any).port}`;
+  try {
+    const resEmpty = await post(`${baseUrl}/agents`, {
+      displayName: "Valid Name",
+      capabilities: [""],
+    });
+    assert.equal(resEmpty.status, 400);
+    assert.equal(resEmpty.body.error, "capability entries cannot be empty");
+
+    const resWhitespace = await post(`${baseUrl}/agents`, {
+      displayName: "Valid Name",
+      capabilities: ["   "],
+    });
+    assert.equal(resWhitespace.status, 400);
+    assert.equal(resWhitespace.body.error, "capability entries cannot be empty");
+  } finally {
+    await server.close();
+  }
+});
+
+test("POST /agents validation — duplicate capabilities rejected", async () => {
+  const server = await createApiServer({
+    port: 0,
+    horizonUrl: "https://horizon-testnet.stellar.org",
+    signer: makeSigner("GTEST"),
+    authProvider: new DevAuthProvider({ defaultOwnerId: "owner-a" }),
+  });
+  await server.listen(0);
+  const baseUrl = `http://127.0.0.1:${(server.server.address() as any).port}`;
+  try {
+    const resDup = await post(`${baseUrl}/agents`, {
+      displayName: "Valid Name",
+      capabilities: ["payment", "payment"],
+    });
+    assert.equal(resDup.status, 400);
+    assert.equal(resDup.body.error, "capabilities must not contain duplicate entries");
+
+    const resDupTrimmed = await post(`${baseUrl}/agents`, {
+      displayName: "Valid Name",
+      capabilities: ["payment", " payment "],
+    });
+    assert.equal(resDupTrimmed.status, 400);
+    assert.equal(resDupTrimmed.body.error, "capabilities must not contain duplicate entries");
+  } finally {
+    await server.close();
+  }
+});
+
+test("POST /agents validation — exactly-at-limit values accepted", async () => {
+  const server = await createApiServer({
+    port: 0,
+    horizonUrl: "https://horizon-testnet.stellar.org",
+    signer: makeSigner("GTEST"),
+    authProvider: new DevAuthProvider({ defaultOwnerId: "owner-a" }),
+  });
+  await server.listen(0);
+  const baseUrl = `http://127.0.0.1:${(server.server.address() as any).port}`;
+  try {
+    const exactly500Desc = "d".repeat(500);
+    const exactly32Caps = Array.from({ length: 32 }, (_, i) => `c${i}`.padEnd(32, "x"));
+    const res = await post(`${baseUrl}/agents`, {
+      displayName: "n".repeat(100),
+      description: exactly500Desc,
+      capabilities: exactly32Caps,
+    });
+    assert.equal(res.status, 201);
+    assert.equal(res.body.agent.displayName, "n".repeat(100));
+    assert.equal(res.body.agent.description, exactly500Desc);
+    assert.equal(res.body.agent.capabilities.length, 32);
+    assert.deepEqual(res.body.agent.capabilities, exactly32Caps);
+  } finally {
+    await server.close();
+  }
+});
+
+test("POST /agents capabilities are trimmed", async () => {
+  const server = await createApiServer({
+    port: 0,
+    horizonUrl: "https://horizon-testnet.stellar.org",
+    signer: makeSigner("GTEST"),
+    authProvider: new DevAuthProvider({ defaultOwnerId: "owner-a" }),
+  });
+  await server.listen(0);
+  const baseUrl = `http://127.0.0.1:${(server.server.address() as any).port}`;
+  try {
+    const res = await post(`${baseUrl}/agents`, {
+      displayName: "Trim Test",
+      capabilities: ["  payment  ", " swap "],
+    });
+    assert.equal(res.status, 201);
+    assert.deepEqual(res.body.agent.capabilities, ["payment", "swap"]);
+  } finally {
+    await server.close();
+  }
+});

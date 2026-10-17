@@ -26,8 +26,14 @@ import type { SimulationResult } from "@4evergent/shared";
 export class StellarSimulator {
   private server: Horizon.Server;
 
-  constructor(horizonUrl: string) {
-    this.server = new Horizon.Server(horizonUrl);
+  /**
+   * @param horizonUrl Horizon endpoint (used when no server is injected).
+   * @param server Optional `Horizon.Server` seam for tests — inject a fake to
+   *        keep `simulate()` fully offline. Production callers omit this and
+   *        the server is constructed from `horizonUrl`.
+   */
+  constructor(horizonUrl: string, server?: Horizon.Server) {
+    this.server = server ?? new Horizon.Server(horizonUrl);
   }
 
   async simulate(transaction: Transaction): Promise<SimulationResult> {

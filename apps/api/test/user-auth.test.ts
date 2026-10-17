@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { DatabaseSync } from "node:sqlite";
 import { createHash } from "node:crypto";
 import { Keypair } from "@stellar/stellar-sdk";
 import type { AddressInfo } from "node:net";
@@ -66,6 +67,27 @@ async function j(baseUrl: string, path: string, init: RequestInit = {}, cookie?:
 }
 
 const XRW = { "X-Requested-With": "4evergent" };
+
+test("session retention deletes expired rows and preserves live sessions", async () => {
+  const { server, baseUrl, authModule } = await createAuthTestServer({ config: { sessionTtlSeconds: 3600 } });
+  try {
+    const reg = await j(baseUrl, "/auth/register", {
+      method: "POST",
+      headers: XRW,
+      body: JSON.stringify({ email: "retention@example.com", password: "password123" }),
+    });
+    const cookie = cookieOf(reg.res)!;
+    const req = { headers: { cookie: `four_eg_session=${cookie}` } };
+    assert.ok(authModule.sessionFor(req));
+    assert.equal(authModule.sweepExpiredSessions(Date.now()), 0);
+    assert.ok(authModule.sessionFor(req), "live session survives cleanup");
+
+    assert.equal(authModule.sweepExpiredSessions(Date.now() + 2 * 60 * 60_000), 1);
+    assert.equal(authModule.sessionFor(req), null, "expired session was removed");
+  } finally {
+    await server.close();
+  }
+});
 
 /* ================================ email ================================ */
 
@@ -540,6 +562,33 @@ test("sqlite mode: sessions persist to disk; users round-trip", async () => {
     const list = await j(baseUrl, "/agents", {}, cookie);
     assert.equal(list.status, 200);
   } finally {
+    await server.close();
+    const { rmSync } = await import("node:fs");
+    rmSync(path, { force: true });
+  }
+});
+
+test("SQLite session retention removes expired rows by the indexed expiry", async () => {
+  const path = `/tmp/authtest-retention-${process.pid}-${Date.now()}.db`;
+  const { server, baseUrl, authModule } = await createAuthTestServer({ dbPath: path });
+  const db = new DatabaseSync(path);
+  try {
+    const reg = await j(baseUrl, "/auth/register", {
+      method: "POST", headers: XRW,
+      body: JSON.stringify({ email: "sqlite-retention@x.com", password: "password123" }),
+    });
+    assert.equal(reg.status, 201);
+    const cookie = cookieOf(reg.res)!;
+    const session = authModule.sessionFor({ headers: { cookie: `four_eg_session=${cookie}` } });
+    assert.ok(session);
+    db.prepare("UPDATE auth_sessions SET expires_at = ? WHERE token = ?").run(Date.now() - 1, session!.token);
+
+    assert.equal(authModule.sweepExpiredSessions(Date.now()), 1);
+    assert.equal(authModule.sweepExpiredSessions(Date.now()), 0);
+    const indexes = db.prepare("PRAGMA index_list(auth_sessions)").all() as { name: string }[];
+    assert.ok(indexes.some((index) => index.name === "idx_auth_sessions_exp"));
+  } finally {
+    db.close();
     await server.close();
     const { rmSync } = await import("node:fs");
     rmSync(path, { force: true });

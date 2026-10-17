@@ -1,36 +1,57 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api';
 import type { ApprovalRecord } from '../types';
-import { Skeleton, EmptyState } from '../components';
+import { Skeleton, EmptyState, PaginationFooter } from '../components';
+
+const PAGE_SIZE = 50;
 
 export default function Approvals() {
   const [approvals, setApprovals] = useState<ApprovalRecord[] | null>(null);
+  const [hasMore, setHasMore] = useState(false);
+  const [total, setTotal] = useState<number | null>(null);
+  const [nextOffset, setNextOffset] = useState(0);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loadingId, setLoadingId] = useState<string | null>(null);
 
-  const load = () => {
-    api.listApprovals('pending_approval')
-      .then((r) => setApprovals(r.approvals))
-      .catch((e: any) => setError(e.message));
-  };
+  const loadPage = useCallback(async (offset: number, replace: boolean) => {
+    try {
+      const r = await api.listApprovals('pending_approval', PAGE_SIZE, offset);
+      setApprovals(replace ? r.approvals : (prev) => (prev ?? []).concat(r.approvals));
+      setHasMore(r.hasMore);
+      setTotal(r.total ?? null);
+      setNextOffset(offset + r.approvals.length);
+    } catch (e: any) {
+      setError(e.message);
+    }
+  }, []);
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    loadPage(0, true).catch(() => {});
+  }, [loadPage]);
+
+  const loadMore = () => {
+    setLoadingMore(true);
+    loadPage(nextOffset, false).finally(() => setLoadingMore(false));
+  };
 
   const handleAction = (id: string, action: 'approve' | 'reject') => {
     setLoadingId(id);
     const call = action === 'approve' ? api.approve(id) : api.reject(id);
     call
-      .then(() => load())
+      .then(() => loadPage(0, true))
       .catch(() => { /* list untouched on failure; row remains */ })
       .finally(() => setLoadingId(null));
   };
 
   if (error) return <EmptyState title="Failed to load approvals" message={error} />;
   if (approvals === null) return <Skeleton label="Loading approvals..." />;
-  if (approvals.length === 0) return (
-    <EmptyState title="No pending approvals" message="Approvals requiring action will appear here." />
-  );
+  if (approvals.length === 0) {
+    return (
+      <EmptyState title="No pending approvals" message="Approvals requiring action will appear here." />
+    );
+  }
 
   return (
     <section>
@@ -38,6 +59,9 @@ export default function Approvals() {
         <div>
           <h1>Approvals</h1>
           <p className="muted">Operational review queue for human-in-the-loop authorization.</p>
+          {total !== null && total > approvals.length && (
+            <p className="muted">Showing {approvals.length} of {total} pending approvals</p>
+          )}
         </div>
       </div>
 
@@ -71,6 +95,8 @@ export default function Approvals() {
           </tbody>
         </table>
       </div>
+
+      <PaginationFooter hasMore={hasMore} loadingMore={loadingMore} onLoadMore={loadMore} itemCount={approvals.length} />
     </section>
   );
 }

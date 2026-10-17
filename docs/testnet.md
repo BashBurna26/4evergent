@@ -254,6 +254,18 @@ Verified on 2026-09-28: `query` on an unknown id returned `null`; after
 `register`, `query` returned the record with `"active": true`; the fetched wasm
 sha256 equalled `83656ffddd08a22e1977b6cf129af4d6515be7e8494d843ded1aa1c0ef3f8445`.
 
+### Worker intervals
+
+The background workers poll on fixed intervals that can be tuned with environment variables (milliseconds, positive numbers only; an invalid value stops startup with a `FATAL` error):
+
+| Variable | Worker | Default |
+| --- | --- | --- |
+| `RECONCILIATION_INTERVAL_MS` | Transaction status reconciliation | `30000` |
+| `EXECUTION_QUEUE_INTERVAL_MS` | Execution queue | `10000` |
+| `SCHEDULER_INTERVAL_MS` | Schedule polling | `60000` |
+
+A faster reconciliation loop is handy for a testnet demo; a slower one reduces Horizon load. The startup log lines (`[reconciler] started, interval: ...`) show the effective value.
+
 ## Safety Guards (Phase 21)
 
 - **Network validation**: Only Testnet URL + passphrase accepted. Mainnet explicitly rejected.

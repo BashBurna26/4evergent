@@ -36,6 +36,15 @@ jobs:
       - name: Build
         run: pnpm build
 
+      - name: Verify packed CLI install
+        run: |
+          mkdir -p "$RUNNER_TEMP/cli-pack"
+          pnpm --filter @4evergent/cli pack --pack-destination "$RUNNER_TEMP/cli-pack"
+          npm install --prefix "$RUNNER_TEMP/cli-install" "$RUNNER_TEMP"/cli-pack/*.tgz
+          expected="$(node -p "require('./apps/cli/package.json').version")"
+          actual="$("$RUNNER_TEMP/cli-install/node_modules/.bin/4evergent" --version)"
+          test "$actual" = "$expected"
+
       - name: Lint
         run: pnpm lint
 

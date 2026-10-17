@@ -1,5 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
 import type { PolicyRules } from "@4evergent/shared";
+import { getSharedConnection } from "./shared-connection.js";
 
 export interface PolicyConfigStore {
   get(agentId: string): Promise<PolicyRules | null>;
@@ -16,14 +17,13 @@ export class SQLitePolicyConfigStore implements PolicyConfigStore {
   private db: DatabaseSync;
 
   constructor(dbPath: string) {
-    this.db = new DatabaseSync(dbPath);
+    this.db = getSharedConnection(dbPath);
     this.initSchema();
   }
 
   private initSchema(): void {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS _meta (key TEXT PRIMARY KEY, value TEXT);
-      INSERT OR IGNORE INTO _meta (key, value) VALUES ('schema_version', '5');
 
       CREATE TABLE IF NOT EXISTS policy_configs (
         agent_id TEXT PRIMARY KEY,
@@ -115,6 +115,6 @@ export class SQLitePolicyConfigStore implements PolicyConfigStore {
   }
 
   close(): void {
-    this.db.close();
+    // Shared connection — managed by closeSharedConnection() / closeAllSharedConnections()
   }
 }
