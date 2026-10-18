@@ -20,15 +20,12 @@ const PASSPHRASE = "Test SDF Network ; September 2015";
  */
 class RecordingSigner implements Signer {
   calls = 0;
-  private id: string;
-  constructor(id = "test-agent") {
-    this.id = `G${id.padEnd(55, "A").slice(0, 55)}`;
-  }
-  getAccountId(): string { return this.id; }
+  private keypair = Keypair.random();
+  getAccountId(): string { return this.keypair.publicKey(); }
   getNetworkPassphrase(): string { return PASSPHRASE; }
   async sign(transaction: any): Promise<any> {
     this.calls++;
-    transaction.signatures = [{ hint: Buffer.from("rec"), signature: Buffer.from("sig") }];
+    transaction.sign(this.keypair);
     return transaction;
   }
 }
@@ -301,6 +298,61 @@ test("SEC: daily limit allows when under cumulative cap", async () => {
   // 30 + 50 = 80 <= 100 — should pass the daily gate (will fail later at
   // simulation because the account is unfunded, but NOT at daily limit)
   assert.ok(!/daily/.test(result.message ?? ""), `unexpected daily limit: ${result.message}`);
+});
+
+test("SEC: pipeline execution aborts when signal is pre-aborted — no signing or submission", async () => {
+  const signer = new RecordingSigner();
+  const { pipeline } = makePipeline({ signer });
+  const controller = new AbortController();
+  controller.abort();
+
+  await assert.rejects(
+    async () => {
+      await pipeline.execute({
+        intent: paymentIntent("10"),
+        sourceAccount: fakeAccount("agent-a"),
+        signal: controller.signal,
+      });
+    },
+    (err: any) => err.name === "AbortError"
+  );
+
+  assert.equal(signer.calls, 0, "signer must not be called when execution is cancelled");
+});
+
+test("SEC: pipeline execution aborts during onBeforeSubmit — no submission occurs", async () => {
+  const signer = new RecordingSigner();
+  const { pipeline } = makePipeline({ signer });
+  (pipeline as any).simulator = {
+    simulate: async () => ({ success: true, fee: "100", operations: 1 }),
+  };
+  let submitCalled = false;
+  (pipeline as any).submitter = {
+    submit: async () => {
+      submitCalled = true;
+      throw new Error("submitter must not be called");
+    },
+  };
+
+  const controller = new AbortController();
+  let beforeSubmitReached = false;
+  await assert.rejects(
+    async () => {
+      await pipeline.execute({
+        intent: paymentIntent("10"),
+        sourceAccount: fakeAccount("agent-a"),
+        signal: controller.signal,
+        onBeforeSubmit: () => {
+          beforeSubmitReached = true;
+          controller.abort();
+        },
+      });
+    },
+    (err: any) => err.name === "AbortError"
+  );
+
+  assert.equal(beforeSubmitReached, true);
+  assert.equal(submitCalled, false, "submitter.submit must not be called after cancellation");
 });
 
 // ===== Helpers =====

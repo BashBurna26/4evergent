@@ -19,6 +19,7 @@ An open-source framework for deploying AI agents that hold permissioned Stellar 
 7. [Testnet setup](#testnet-setup)
 8. [Adding a new agent capability](#adding-a-new-agent-capability)
 9. [Roadmap](#roadmap)
+10. [HTTP API reference and OpenAPI document](docs/api.md#openapi-document)
 
 ---
 
@@ -119,12 +120,11 @@ cd 4evergent
 # install (Node 22+, pnpm 10+, frozen lockfile for reproducible builds)
 pnpm install --frozen-lockfile
 
-# build all packages
-pnpm build
-
-# run tests
-pnpm test
+# run the same checks as CI (build, lint, typecheck, then tests)
+pnpm verify
 ```
+
+`pnpm verify` runs the repository checks in CI order and stops at the first failure. Dependencies must be installed first.
 
 ### Prerequisites
 
@@ -149,11 +149,28 @@ node apps/api/dist/server.js
 ```
 
 The server starts on `http://localhost:3000`. See [docs/testnet.md](docs/testnet.md) for the full Testnet workflow including funding, simulation, and live submission (`LIVE_SUBMIT=1`).
+For startup failures and connection troubleshooting, see [docs/troubleshooting.md](docs/troubleshooting.md).
+
+### Watch the API server (edit → reload)
+
+For development, run the API server from source with a file watcher so edits restart the server automatically — no manual rebuild/restart:
+
+```bash
+# one-time: build the workspace packages the API imports
+pnpm build
+
+# start the API server in watch mode (reloads on source changes)
+pnpm --filter @4evergent/api dev
+# or, from the repo root:
+pnpm dev:watch
+```
+
+`pnpm --filter @4evergent/api dev` runs `tsx watch` against `apps/api/src/server.ts`, so the API restart is driven by source changes (equivalent to editing → rebuilding → restarting, but automatic). The script runs the API from source and therefore does **not** require `apps/api` to be built first, but the workspace packages it imports (`@4evergent/shared`, `@4evergent/agent-core`, `@4evergent/policy`, `@4evergent/stellar`, `@4evergent/database`) are resolved from their compiled `dist/` output — run `pnpm build` once first (or `pnpm dev`, which recompiles those packages in watch mode). Like `start`, the watch script loads `.env` from the repo root when present via `--env-file-if-exists`.
 
 ### Run the dashboard
 
 ```bash
-# terminal 1: start the API server
+# terminal 1: start the API server in watch mode (see above)
 pnpm --filter @4evergent/api dev
 
 # terminal 2: start the web dashboard
@@ -174,7 +191,7 @@ export STELLAR_HORIZON_URL=https://horizon-testnet.stellar.org
 #   curl "https://friendbot.stellar.org?addr=<PUBLIC_KEY>"
 ```
 
-The MVP is validated against the testnet Horizon API. See [docs/testnet.md](docs/testnet.md) for details.
+The MVP is validated against the testnet Horizon API. See [docs/testnet.md](docs/testnet.md) for details, and [docs/troubleshooting.md](docs/troubleshooting.md) for startup and connectivity issues.
 
 ## Adding a new agent capability
 
@@ -210,7 +227,11 @@ curl -X POST http://localhost:3000/agents/<agent-id>/schedules/<schedule-id>/res
 curl -X POST http://localhost:3000/agents/<agent-id>/schedules/<schedule-id>/disable
 ```
 
-Schedules are stored in SQLite (when `dbPath` is configured) or in-memory. The scheduler polls every 60 seconds by default. Failed schedules do not stop the scheduler.
+Schedules are stored in SQLite (when `dbPath` is configured) or in-memory. The scheduler polls every 60 seconds by default. Failed schedules do not stop the scheduler. The scheduler, execution queue and reconciliation worker intervals are configurable via `SCHEDULER_INTERVAL_MS`, `EXECUTION_QUEUE_INTERVAL_MS` (default 10s) and `RECONCILIATION_INTERVAL_MS` (default 30s); see [docs/testnet.md](docs/testnet.md#worker-intervals).
+
+### Missed runs
+
+The scheduler runs an occurrence that is due now or up to five minutes late. If a process restart leaves an occurrence more than five minutes overdue, it skips that occurrence, records the skip in the scheduler log, and advances to the next cron occurrence. If the expression is invalid or cannot produce a strictly future occurrence, the scheduler pauses it and logs why; correct the expression before resuming it. Multiple missed intervals never produce a catch-up burst. Set `SCHEDULER_MAX_LATENESS_MS` to change the grace period; the default is `300000` (five minutes). The server starts the scheduler only when `SCHEDULER_ENABLED=1`.
 
 ## Operator CLI
 

@@ -1,39 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createApiServer } from "../src/index.js";
-import { DevAuthProvider } from "@4evergent/shared";
-import { InMemoryScheduleStore, InMemoryActivityStore, InMemoryExecutionStore } from "@4evergent/database";
-import type { ScheduleRecord, ActivityStore, ExecutionStore, ExecutionRecord } from "@4evergent/database";
-import type { Signer } from "@4evergent/stellar";
-import type { AddressInfo } from "node:net";
+import type { ScheduleRecord, ExecutionRecord } from "@4evergent/database";
 import crypto from "node:crypto";
-
-class MockSigner implements Signer {
-  private id: string;
-  constructor(id: string) {
-    this.id = id.startsWith("G") ? id : `G${id.padEnd(55, "A").slice(0, 55)}`;
-  }
-  getAccountId(): string { return this.id; }
-  getNetworkPassphrase(): string { return "Test SDF Network ; September 2015"; }
-  async sign(transaction: any): Promise<any> {
-    transaction.signatures = [{ hint: Buffer.from("mock"), signature: Buffer.from("sig") }];
-    return transaction;
-  }
-}
-
-const TEST_AGENT = {
-  id: "test-agent",
-  displayName: "Test Agent",
-  description: "test agent",
-  ownerId: "test",
-  stellarAddress: "GDAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-  capabilities: ["payment"],
-  status: "active" as const,
-  createdAt: new Date().toISOString(),
-  updatedAt: new Date().toISOString(),
-  active: true,
-  metadata: {},
-};
+import { startServer, waitFor } from "./helpers.js";
 
 function makeSchedule(overrides: Partial<ScheduleRecord> = {}): ScheduleRecord {
   const now = new Date().toISOString();
@@ -59,68 +28,6 @@ function makeSchedule(overrides: Partial<ScheduleRecord> = {}): ScheduleRecord {
   };
 }
 
-interface TestServer {
-  baseUrl: string;
-  close: () => Promise<void>;
-  activityStore: ActivityStore;
-  executionStore: ExecutionStore;
-  scheduleStore: InMemoryScheduleStore;
-}
-
-/** Start a server with scheduler + execution queue enabled at a low interval. */
-async function startServer(intervalMs = 100): Promise<TestServer> {
-  const activityStore = new InMemoryActivityStore();
-  const executionStore = new InMemoryExecutionStore();
-  const scheduleStore = new InMemoryScheduleStore();
-
-  const server = await createApiServer({
-    port: 0,
-    horizonUrl: "https://horizon-testnet.stellar.org",
-    signer: new MockSigner("test-agent"),
-    policyRules: { maxTxAmount: { XLM: "1000" } },
-    deferExecution: true,
-    authProvider: new DevAuthProvider({ defaultOwnerId: "test" }),
-    activityStore,
-    executionStore,
-    scheduleStore,
-    executionQueue: { enabled: true, intervalMs },
-    scheduler: { enabled: true, intervalMs },
-  });
-
-  server.registerAgent(TEST_AGENT);
-
-  return new Promise<TestServer>((resolve) => {
-    const http = server.server.listen(0, "127.0.0.1", () => {
-      const addr = http.address() as AddressInfo;
-      resolve({
-        baseUrl: `http://127.0.0.1:${addr.port}`,
-        close: () => server.close(),
-        activityStore,
-        executionStore,
-        scheduleStore,
-      });
-    });
-  });
-}
-
-/** Sleep for n ms on the event loop. */
-function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
-/**
- * Poll an async predicate until it returns a truthy value or timeout.
- */
-async function waitFor<T>(fn: () => Promise<T | undefined> | T | undefined, timeoutMs = 2000, intervalMs = 20): Promise<T | undefined> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const result = await fn();
-    if (result) return result;
-    await sleep(intervalMs);
-  }
-  return await fn();
-}
-
 /** Find the first execution record for an agent with a given status (or any). */
 function findExecution(records: ExecutionRecord[], status?: string): ExecutionRecord | undefined {
   if (status) return records.find((r) => r.status === status);
@@ -128,7 +35,7 @@ function findExecution(records: ExecutionRecord[], status?: string): ExecutionRe
 }
 
 test("SCHEDULE ACTIVITY TEST 1: scheduler enqueues execution with linked ActivityRecord", async () => {
-  const { close, _activityStore, executionStore, scheduleStore } = await startServer(50);
+  const { close, executionStore, scheduleStore } = await startServer({ intervalMs: 50, schedulerEnabled: true, policyRules: { maxTxAmount: { XLM: "1000" } }, deferExecution: true });
 
   try {
     const schedule = makeSchedule();
@@ -150,7 +57,7 @@ test("SCHEDULE ACTIVITY TEST 1: scheduler enqueues execution with linked Activit
 });
 
 test("SCHEDULE ACTIVITY TEST 2: scheduler creates ActivityRecord before pipeline runs", async () => {
-  const { close, activityStore, executionStore, scheduleStore } = await startServer(50);
+  const { close, activityStore, executionStore, scheduleStore } = await startServer({ intervalMs: 50, schedulerEnabled: true, policyRules: { maxTxAmount: { XLM: "1000" } }, deferExecution: true });
 
   try {
     const schedule = makeSchedule();
@@ -178,7 +85,7 @@ test("SCHEDULE ACTIVITY TEST 2: scheduler creates ActivityRecord before pipeline
 });
 
 test("SCHEDULE ACTIVITY TEST 3: ExecutionRecord.activityId links to ActivityRecord", async () => {
-  const { close, activityStore, executionStore, scheduleStore } = await startServer(50);
+  const { close, activityStore, executionStore, scheduleStore } = await startServer({ intervalMs: 50, schedulerEnabled: true, policyRules: { maxTxAmount: { XLM: "1000" } }, deferExecution: true });
 
   try {
     const schedule = makeSchedule();
@@ -205,17 +112,17 @@ test("SCHEDULE ACTIVITY TEST 3: ExecutionRecord.activityId links to ActivityReco
 });
 
 test("SCHEDULE ACTIVITY TEST 4: no duplicate ActivityRecord after pipeline runs", async () => {
-  const { close, activityStore, executionStore, scheduleStore } = await startServer(50);
+  const { close, activityStore, executionStore, scheduleStore } = await startServer({ intervalMs: 50, schedulerEnabled: true, policyRules: { maxTxAmount: { XLM: "1000" } }, deferExecution: true });
 
   try {
     const schedule = makeSchedule();
     await scheduleStore.create(schedule);
 
-    // Wait for execution to reach a terminal state
+    // Wait for execution to reach a terminal state (Horizon network call takes ~6s)
     await waitFor(async () => {
       const recs = await executionStore.listByAgent(schedule.agentId);
       return findExecution(recs, "submitted") ?? findExecution(recs, "dead_letter") ?? findExecution(recs, "failed");
-    }, 2000);
+    }, 15000);
 
     // There should be exactly ONE ActivityRecord for this schedule's execution
     const allActivities = await activityStore.listByAgent(schedule.agentId);
@@ -230,7 +137,7 @@ test("SCHEDULE ACTIVITY TEST 4: no duplicate ActivityRecord after pipeline runs"
 });
 
 test("SCHEDULE ACTIVITY TEST 5: owner isolation — activity belongs to schedule owner", async () => {
-  const { close, activityStore, executionStore, scheduleStore } = await startServer(50);
+  const { close, activityStore, executionStore, scheduleStore } = await startServer({ intervalMs: 50, schedulerEnabled: true, policyRules: { maxTxAmount: { XLM: "1000" } }, deferExecution: true });
 
   try {
     const schedule = makeSchedule();

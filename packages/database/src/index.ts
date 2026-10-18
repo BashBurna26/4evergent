@@ -58,6 +58,9 @@ export interface ApprovalStore {
   listAll(limit?: number, offset?: number): Promise<ApprovalRecord[]>;
   /** List approvals for an owner. `status` filters at the store level (see listByAgent). */
   listByOwner(ownerId: string, limit?: number, offset?: number, status?: string): Promise<ApprovalRecord[]>;
+  /** Count approvals for an owner. `status` filters at the store level (see listByOwner).
+   *  Unlike list*, this is never capped, so callers get the true total. */
+  countByOwner(ownerId: string, status?: string): Promise<number>;
   getForOwner(id: string, ownerId: string): Promise<ApprovalRecord | null>;
   update(id: string, patch: Partial<ApprovalRecord>): Promise<ApprovalRecord | null>;
 }
@@ -277,6 +280,14 @@ export class InMemoryApprovalStore implements ApprovalStore {
       .filter((r) => r.ownerId === ownerId && (status === undefined || r.status === status))
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
       .slice(safeOffset, safeOffset + clampLimit(limit));
+  }
+
+  async countByOwner(ownerId: string, status?: string): Promise<number> {
+    let n = 0;
+    for (const r of this.records.values()) {
+      if (r.ownerId === ownerId && (status === undefined || r.status === status)) n++;
+    }
+    return n;
   }
 
   async getForOwner(id: string, ownerId: string): Promise<ApprovalRecord | null> {

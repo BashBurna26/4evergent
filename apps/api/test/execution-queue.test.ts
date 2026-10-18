@@ -280,3 +280,300 @@ test("computeNextRetryAt: capped at maxDelayMs", () => {
   const result = computeNextRetryAt(5, policy, now);
   assert.equal(result, new Date("2026-01-01T00:00:05Z").toISOString());
 });
+
+test("ExecutionQueue.cancel: queued → cancelled with completedAt and error", async () => {
+  const store = new InMemoryExecutionStore();
+  const queue = new ExecutionQueue(store, async (rec) => ({ record: rec, success: true }));
+  const execution = makeExecution({ status: "queued", nextRetryAt: "2026-01-01T00:00:00Z" });
+  await store.record(execution);
+
+  const res = await queue.cancel(execution.id);
+  assert.equal(res.status, "cancelled");
+  assert.ok(res.execution);
+  assert.equal(res.execution.status, "cancelled");
+  assert.equal(res.execution.error, "cancelled by user");
+  assert.equal(res.execution.nextRetryAt, null);
+  assert.equal(res.execution.startedAt, null);
+  assert.ok(res.execution.completedAt);
+
+  const stored = await store.get(execution.id);
+  assert.equal(stored?.status, "cancelled");
+});
+
+test("ExecutionQueue.cancel: before execution starts — queued is cancelled and never executed", async () => {
+  const store = new InMemoryExecutionStore();
+  let executed = false;
+  const queue = new ExecutionQueue(store, async (rec) => {
+    executed = true;
+    return { record: rec, success: true, status: "submitted" };
+  });
+
+  const execution = makeExecution({ status: "queued", nextRetryAt: "2026-01-01T00:00:00Z" });
+  await store.record(execution);
+
+  // Cancel before processDue runs
+  const res = await queue.cancel(execution.id);
+  assert.equal(res.status, "cancelled");
+  assert.equal(res.execution?.status, "cancelled");
+
+  // Worker runs
+  const started = await queue.processDue("2026-01-01T00:00:01Z");
+  assert.equal(started, 0, "cancelled execution must not be claimed or started");
+  assert.equal(executed, false, "pipeline executor must not be called");
+
+  const stored = await store.get(execution.id);
+  assert.equal(stored?.status, "cancelled");
+});
+
+test("ExecutionQueue.cancel: in-flight execution is aborted and transaction submission is prevented", async () => {
+  const store = new InMemoryExecutionStore();
+  let pipelineStarted = false;
+  let txSubmitted = false;
+
+  let resolveRunning: () => void;
+  const runningPromise = new Promise<void>((r) => {
+    resolveRunning = r;
+  });
+
+  const queue = new ExecutionQueue(store, async (rec, ctx) => {
+    pipelineStarted = true;
+    resolveRunning();
+
+    // Simulate in-flight work before submission (e.g. simulation/signing)
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Guard before transaction submission
+    if (ctx?.signal.aborted) {
+      const err = new Error("Execution was cancelled");
+      err.name = "AbortError";
+      throw err;
+    }
+    await ctx?.onBeforeSubmit?.();
+
+    if (ctx?.signal.aborted) {
+      const err = new Error("Execution was cancelled");
+      err.name = "AbortError";
+      throw err;
+    }
+
+    // Submit transaction
+    txSubmitted = true;
+    ctx?.onSubmitted?.("tx-123");
+    return { record: rec, success: true, status: "submitted", txHash: "tx-123" };
+  });
+
+  const execution = makeExecution({ status: "queued", nextRetryAt: "2026-01-01T00:00:00Z" });
+  await store.record(execution);
+
+  // Start processing
+  const processPromise = queue.processDue("2026-01-01T00:00:01Z");
+
+  // Wait until pipeline has started and is in-flight
+  await runningPromise;
+  assert.equal(pipelineStarted, true);
+  assert.equal(txSubmitted, false);
+
+  // Cancel while execution is in progress
+  const cancelRes = await queue.cancel(execution.id);
+  assert.equal(cancelRes.status, "cancelled");
+  assert.equal(cancelRes.execution?.status, "cancelled");
+  assert.equal(cancelRes.execution?.error, "cancelled by user");
+
+  await processPromise;
+
+  // Transaction submission must NOT have occurred
+  assert.equal(txSubmitted, false, "transaction submission must not happen after cancellation");
+
+  // Execution status in store must remain cancelled
+  const stored = await store.get(execution.id);
+  assert.equal(stored?.status, "cancelled");
+  assert.equal(stored?.error, "cancelled by user");
+  assert.equal(stored?.txHash, null);
+});
+
+test("ExecutionQueue.cancel: rejects cancellation once execution has entered non-cancellable submitting state", async () => {
+  const store = new InMemoryExecutionStore();
+  let resolveSubmitting: () => void;
+  const submittingPromise = new Promise<void>((r) => {
+    resolveSubmitting = r;
+  });
+
+  let resolveSubmitDone: () => void;
+  const submitDonePromise = new Promise<void>((r) => {
+    resolveSubmitDone = r;
+  });
+
+  let txSubmitted = false;
+
+  const queue = new ExecutionQueue(store, async (rec, ctx) => {
+    // Step into submitting phase
+    await ctx?.onBeforeSubmit?.();
+    resolveSubmitting();
+
+    // Simulate in-flight submission to Horizon
+    await submitDonePromise;
+
+    txSubmitted = true;
+    ctx?.onSubmitted?.("tx-committed-456");
+    return { record: rec, success: true, status: "submitted", txHash: "tx-committed-456" };
+  });
+
+  const execution = makeExecution({ status: "queued", nextRetryAt: "2026-01-01T00:00:00Z" });
+  await store.record(execution);
+
+  const processPromise = queue.processDue("2026-01-01T00:00:01Z");
+
+  // Wait until onBeforeSubmit has been reached
+  await submittingPromise;
+
+  // Attempt to cancel after submission has started
+  const cancelRes = await queue.cancel(execution.id);
+  assert.equal(cancelRes.status, "invalid_state", "cancel must be rejected once in submitting phase");
+
+  // Allow submission to complete
+  resolveSubmitDone();
+  await processPromise;
+
+  assert.equal(txSubmitted, true);
+  const stored = await store.get(execution.id);
+  assert.equal(stored?.status, "submitted");
+  assert.equal(stored?.txHash, "tx-committed-456");
+});
+
+test("ExecutionQueue.cancel: queued → cancelled", async () => {
+  const store = new InMemoryExecutionStore();
+  const queue = new ExecutionQueue(store, async (rec) => ({ record: rec, success: true }));
+  const execution = makeExecution({ status: "queued" });
+  await store.record(execution);
+
+  const res = await queue.cancel(execution.id);
+  assert.equal(res.status, "cancelled");
+  assert.equal(res.execution?.status, "cancelled");
+  assert.equal(res.execution?.error, "cancelled by user");
+  const stored = await store.get(execution.id);
+  assert.equal(stored?.status, "cancelled");
+});
+
+test("ExecutionQueue.cancel: executing record without local in-flight entry is rejected", async () => {
+  const store = new InMemoryExecutionStore();
+  const queue = new ExecutionQueue(store, async (rec) => ({ record: rec, success: true }));
+  const execution = makeExecution({ status: "executing", startedAt: "2026-01-01T00:00:00Z" });
+  await store.record(execution);
+
+  const res = await queue.cancel(execution.id);
+  assert.equal(res.status, "invalid_state");
+  assert.equal(res.reason, "not_in_flight");
+  const stored = await store.get(execution.id);
+  assert.equal(stored?.status, "executing", "status must remain executing and not falsely imply cancellation");
+});
+
+test("ExecutionQueue.cancel: rejects non-cancellable states and nonexistent ids", async () => {
+  const store = new InMemoryExecutionStore();
+  const queue = new ExecutionQueue(store, async (rec) => ({ record: rec, success: true }));
+
+  const notFound = await queue.cancel("nonexistent");
+  assert.equal(notFound.status, "not_found");
+
+  for (const s of ["submitted", "confirmed", "failed", "dead_letter", "cancelled"] as const) {
+    const exec = makeExecution({ id: `id-${s}`, status: s });
+    await store.record(exec);
+    const res = await queue.cancel(exec.id);
+    assert.equal(res.status, "invalid_state");
+  }
+});
+
+test("ExecutionQueue.cancel: preserves atomic conditional update conflict guard", async () => {
+  const store = new InMemoryExecutionStore();
+  const queue = new ExecutionQueue(store, async (rec) => ({ record: rec, success: true }));
+  const execution = makeExecution({ status: "queued" });
+  await store.record(execution);
+
+  // Simulate concurrent update before cancel completes
+  const originalUpdateIfStatus = store.updateIfStatus.bind(store);
+  store.updateIfStatus = async (id, expected, patch) => {
+    // Interfere: simulate worker transitioning it to executing in the background
+    await originalUpdateIfStatus(id, expected, { status: "executing" });
+    // Now the conditional update with expectedStatus 'queued' will fail (race lost)
+    return originalUpdateIfStatus(id, expected, patch);
+  };
+
+  const res = await queue.cancel(execution.id);
+  assert.equal(res.status, "conflict");
+});
+
+test("ExecutionQueue.retry: explicitly rejects cancelled execution", async () => {
+  const store = new InMemoryExecutionStore();
+  const queue = new ExecutionQueue(store, async (rec) => ({ record: rec, success: true }));
+  const execution = makeExecution({ status: "cancelled", attempt: 1, error: "cancelled by user" });
+  await store.record(execution);
+
+  const res = await queue.retry(execution.id, 3);
+  assert.equal(res.status, "invalid_state");
+  const stored = await store.get(execution.id);
+  assert.equal(stored?.status, "cancelled");
+});
+
+test("ExecutionQueue: unrelated error containing 'cancelled' or 'aborted' follows normal failure path and is not swallowed", async () => {
+  const store = new InMemoryExecutionStore();
+  let executed = false;
+  const queue = new ExecutionQueue(store, async (_rec, ctx) => {
+    executed = true;
+    assert.equal(ctx?.signal.aborted, false);
+    throw new Error("External payment channel cancelled by remote counterparty");
+  });
+
+  const execution = makeExecution({ status: "queued", nextRetryAt: "2026-01-01T00:00:00Z" });
+  await store.record(execution);
+
+  const started = await queue.processDue("2026-01-01T00:00:01Z");
+  assert.equal(started, 1);
+  assert.equal(executed, true);
+
+  const stored = await store.get(execution.id);
+  // Must NOT be stuck in "executing"
+  assert.notEqual(stored?.status, "executing", "execution must not remain stuck in executing");
+  assert.equal(stored?.status, "dead_letter", "permanent failure moves to dead_letter");
+  assert.match(stored?.error ?? "", /cancelled by remote counterparty/i);
+});
+
+test("ExecutionQueue: unrelated transient error containing 'cancelled' follows retry failure path", async () => {
+  const store = new InMemoryExecutionStore();
+  const queue = new ExecutionQueue(store, async (_rec, ctx) => {
+    assert.equal(ctx?.signal.aborted, false);
+    throw new Error("Horizon network timeout: stream cancelled by gateway");
+  });
+
+  const execution = makeExecution({ status: "queued", nextRetryAt: "2026-01-01T00:00:00Z" });
+  await store.record(execution);
+
+  const started = await queue.processDue("2026-01-01T00:00:01Z");
+  assert.equal(started, 1);
+
+  const stored = await store.get(execution.id);
+  assert.notEqual(stored?.status, "executing", "execution must not remain stuck in executing");
+  assert.equal(stored?.status, "failed");
+  assert.match(stored?.error ?? "", /stream cancelled by gateway/i);
+  assert.ok(stored?.nextRetryAt !== null, "transient error should have nextRetryAt scheduled");
+});
+
+test("ExecutionQueue: unrelated AbortError when signal is not aborted follows normal failure path", async () => {
+  const store = new InMemoryExecutionStore();
+  const queue = new ExecutionQueue(store, async (_rec, ctx) => {
+    assert.equal(ctx?.signal.aborted, false);
+    const err = new Error("Horizon fetch timeout aborted");
+    err.name = "AbortError";
+    throw err;
+  });
+
+  const execution = makeExecution({ status: "queued", nextRetryAt: "2026-01-01T00:00:00Z" });
+  await store.record(execution);
+
+  await queue.processDue("2026-01-01T00:00:01Z");
+
+  const stored = await store.get(execution.id);
+  // Must NOT be stuck in "executing"
+  assert.notEqual(stored?.status, "executing", "execution must not remain stuck in executing");
+  assert.equal(stored?.status, "failed");
+  assert.match(stored?.error ?? "", /fetch timeout aborted/i);
+});
+

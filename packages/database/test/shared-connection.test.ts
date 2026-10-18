@@ -36,6 +36,15 @@ test("returns same DatabaseSync instance for same dbPath", () => {
   cleanup();
 });
 
+test("configures WAL, busy_timeout, and synchronous mode on every shared connection", () => {
+  const dir = makeTmpDir();
+  const db = getSharedConnection(join(dir, "pragmas.db"));
+  assert.equal((db.prepare("PRAGMA journal_mode").get() as { journal_mode: string }).journal_mode, "wal");
+  assert.equal((db.prepare("PRAGMA busy_timeout").get() as { timeout: number }).timeout, 5000);
+  assert.equal((db.prepare("PRAGMA synchronous").get() as { synchronous: number }).synchronous, 1);
+  cleanup();
+});
+
 test("returns different instances for different dbPaths", () => {
   const dir = makeTmpDir();
   const db1 = getSharedConnection(join(dir, "a.db"));
@@ -106,5 +115,23 @@ test("concurrent writes through shared connection do not deadlock", async () => 
 
   const result = db.prepare("SELECT COUNT(*) as c FROM test_concurrent").get() as { c: number };
   assert.equal(result.c, 20);
+  cleanup();
+});
+
+test("concurrent writes from two stores on the same path complete without SQLITE_BUSY", async () => {
+  const dir = makeTmpDir();
+  const dbPath = join(dir, "two-stores.db");
+  const first = new SQLiteAgentStore(dbPath);
+  const second = new SQLiteAgentStore(dbPath);
+  const writes = Array.from({ length: 20 }, (_, index) =>
+    (index % 2 === 0 ? first : second).create({
+      id: `agent-${index}`,
+      displayName: `Agent ${index}`,
+      ownerId: "owner-a",
+    }),
+  );
+  const created = await Promise.all(writes);
+  assert.equal(created.length, 20);
+  assert.equal((await first.listByOwner("owner-a")).length, 20);
   cleanup();
 });

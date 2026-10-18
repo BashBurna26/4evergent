@@ -6,7 +6,11 @@ export function getSharedConnection(dbPath: string): DatabaseSync {
   const existing = connections.get(dbPath);
   if (existing) return existing;
   const db = new DatabaseSync(dbPath);
+  // WAL allows readers to continue while another connection writes. These
+  // connection settings apply to every store sharing this connection.
+  db.exec("PRAGMA journal_mode = WAL;");
   db.exec("PRAGMA busy_timeout = 5000;");
+  db.exec("PRAGMA synchronous = NORMAL;");
   db.exec("CREATE TABLE IF NOT EXISTS _meta (key TEXT PRIMARY KEY, value TEXT);");
   db.exec("INSERT OR IGNORE INTO _meta (key, value) VALUES ('schema_version', '5');");
   connections.set(dbPath, db);

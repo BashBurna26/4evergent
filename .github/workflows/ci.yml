@@ -45,6 +45,9 @@ jobs:
           actual="$("$RUNNER_TEMP/cli-install/node_modules/.bin/4evergent" --version)"
           test "$actual" = "$expected"
 
+      - name: Validate OpenAPI document
+        run: pnpm check:openapi
+
       - name: Lint
         run: pnpm lint
 

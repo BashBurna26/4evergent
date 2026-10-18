@@ -154,6 +154,25 @@ function formatExecution(e: any) {
 `;
 }
 
+function _formatApproval(a: any) {
+  const intent = a.intent ?? {};
+  const rule = a.policyDecision?.rule ?? a.policyRule ?? a.rule ?? "-";
+  return `Approval:
+  ID:            ${a.id}
+  Status:        ${a.status}
+  Agent:         ${a.agentId ?? "-"}
+  Intent Type:   ${intent.type ?? "-"}
+  Amount:        ${intent.amount ?? "-"} ${intent.asset ?? intent.assetCode ?? ""}
+  Destination:   ${intent.destination ?? intent.contractId ?? "-"}
+  Policy Rule:   ${rule}
+  Requester:     ${a.requesterId ?? a.requestedBy ?? "-"}
+  Approver:      ${a.approverId ?? a.approvedBy ?? "-"}
+  Expires:       ${a.expiresAt ?? "-"}
+  Activity:      ${a.activityId ?? "-"}
+  Created:       ${a.createdAt ?? "-"}
+`;
+}
+
 // --- Commands ---
 
 async function cmdHealth() {
@@ -286,6 +305,21 @@ async function cmdExecutionGet(executionId: string) {
   try {
     const { body } = await request(`/executions/${encodeURIComponent(executionId)}`);
     console.log(formatExecution(body.execution));
+    return 0;
+  } catch (err: any) {
+    console.error(`Error: ${err.message}`);
+    return 1;
+  }
+}
+
+async function cmdApprovalGet(approvalId: string) {
+  if (!approvalId) {
+    console.error("Usage: 4evergent approval get <id>");
+    return 1;
+  }
+  try {
+    const { body } = await request(`/approvals/${encodeURIComponent(approvalId)}`);
+    console.log(_formatApproval(body.approval ?? body));
     return 0;
   } catch (err: any) {
     console.error(`Error: ${err.message}`);
@@ -862,11 +896,12 @@ async function main(): Promise<number> {
     case "approval":
       switch (sub) {
         case "list": return cmdApprovalList();
+        case "get": return cmdApprovalGet(argv[2] ?? "");
         case "approve": return cmdApprovalAction(argv[2] ?? "", "approve");
         case "reject": return cmdApprovalAction(argv[2] ?? "", "reject");
         default:
           console.error(`Unknown approval subcommand: ${sub}`);
-          console.error("Usage: 4evergent approval <list|approve|reject> [id]");
+          console.error("Usage: 4evergent approval <list|get|approve|reject> [id]");
           return 1;
       }
     case "execution":

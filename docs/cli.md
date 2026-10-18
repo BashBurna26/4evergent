@@ -50,6 +50,7 @@ is optional when the API is running in development authentication mode.
 4evergent agent resume <id>                 Resume agent (active)
 4evergent agent disable <id>                Disable agent
 4evergent approval list                     List pending approvals
+4evergent approval get <id>                 Show approval detail
 4evergent approval approve <id>             Approve an intent
 4evergent approval reject <id>              Reject an intent
 4evergent execution list                    List executions across all agents
@@ -123,6 +124,7 @@ CLI does not retry automatically — retry manually, using the SAME
 4evergent agent list
 4evergent agent pause agent-123
 4evergent approval list
+4evergent approval get ap-123
 4evergent approval approve ap-123
 4evergent execution list
 4evergent execution get exec-123

@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import net from "node:net";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { writeFileSync, rmSync } from "node:fs";
+import { readFileSync, writeFileSync, rmSync } from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
 
@@ -23,10 +23,19 @@ const TSX_BIN = _require.resolve("tsx/cli");
 const CLI = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "cli.ts");
 const PACKAGE_VERSION = _require("../package.json").version as string;
 
+interface CapturedRequest {
+  method: string;
+  url: string;
+  path: string;
+  headers: Record<string, string>;
+  body: any;
+}
+
 interface RunResult {
   code: number;
   stdout: string;
   stderr: string;
+  requests: CapturedRequest[];
 }
 
 function run(
@@ -40,6 +49,7 @@ function run(
   } = {}
 ): RunResult {
   const responses = opts.responses ?? [];
+  const requestsPath = CLI.replace(/\.ts$/, ".mock-requests.json");
   // Inline mock server: intercepts fetch inside the child process before CLI runs.
   let prelude: string;
   if (opts.real) {
@@ -73,9 +83,26 @@ function run(
   } else {
     prelude = `
     const responses = ${JSON.stringify(responses)};
+    const requestsFile = ${JSON.stringify(requestsPath)};
+    const captured: any[] = [];
     const realFetch = globalThis.fetch;
     globalThis.fetch = async (url, init) => {
       const u = String(url);
+      const parsedUrl = new URL(u);
+      const reqPath = parsedUrl.pathname + parsedUrl.search;
+      const method = String(init?.method ?? "GET").toUpperCase();
+      const headers = (init?.headers ?? {}) as Record<string, string>;
+      const rawBody = typeof init?.body === "string" ? init.body : undefined;
+      let parsedBody: any = rawBody;
+      if (rawBody !== undefined) {
+        try {
+          parsedBody = JSON.parse(rawBody);
+        } catch {
+          parsedBody = rawBody;
+        }
+      }
+      captured.push({ method, url: u, path: reqPath, headers, body: parsedBody });
+      writeFileSync(requestsFile, JSON.stringify(captured));
       const hit = responses.find((r) => u.includes(r.match));
       if (!hit) return new Response(JSON.stringify({ error: "no mock for " + u }), { status: 500 });
       return new Response(JSON.stringify(hit.body), { status: hit.status });
@@ -99,10 +126,12 @@ function run(
   // inside dynamic import() calls, but tsx itself takes a plain file path.
   const cliUrl = pathToFileURL(CLI).href;
   const wrapper = `
+    import { writeFileSync } from "node:fs";
     ${prelude}
     await import(${JSON.stringify(cliUrl)});
   `;
   const wrapperPath = CLI.replace(/\.ts$/, ".mock-wrapper.mts");
+  rmSync(requestsPath, { force: true });
   writeFileSync(wrapperPath, wrapper);
   try {
     const r = spawnSync(process.execPath, [TSX_BIN, wrapperPath, ...args], {
@@ -111,13 +140,21 @@ function run(
       cwd: path.dirname(CLI),
       timeout: 30000,
     });
+    let requests: CapturedRequest[] = [];
+    try {
+      requests = JSON.parse(readFileSync(requestsPath, "utf-8"));
+    } catch {
+      requests = [];
+    }
     return {
       code: r.status ?? 1,
       stdout: r.stdout ?? "",
       stderr: r.stderr ?? "",
+      requests,
     };
   } finally {
     rmSync(wrapperPath, { force: true });
+    rmSync(requestsPath, { force: true });
   }
 }
 
@@ -238,6 +275,55 @@ test("CLI: approval reject → exit 0", () => {
   });
   assert.equal(r.code, 0);
   assert.match(r.stdout, /rejected/);
+});
+
+test("CLI: approval get → calls GET /approvals/:id and prints decision fields", () => {
+  const r = run(["approval", "get", "ap-1"], {
+    responses: [
+      {
+        match: "/approvals/ap-1",
+        status: 200,
+        body: {
+          approval: {
+            id: "ap-1",
+            status: "pending_approval",
+            intent: { type: "payment", amount: "500", asset: "XLM", destination: "GDEST" },
+            policyDecision: { result: "requires_approval", reason: "above threshold", rule: "approvalThreshold" },
+            requesterId: "agent-1",
+            approverId: null,
+            expiresAt: "2026-01-01T01:00:00Z",
+            activityId: "act-1",
+          },
+        },
+      },
+    ],
+  });
+  assert.equal(r.code, 0);
+  assert.equal(r.requests[0]?.method, "GET");
+  assert.equal(r.requests[0]?.path, "/approvals/ap-1");
+  assert.match(r.stdout, /ap-1/);
+  assert.match(r.stdout, /pending_approval/);
+  assert.match(r.stdout, /payment/);
+  assert.match(r.stdout, /500/);
+  assert.match(r.stdout, /GDEST/);
+  assert.match(r.stdout, /approvalThreshold/);
+  assert.match(r.stdout, /2026-01-01T01:00:00Z/);
+  assert.match(r.stdout, /act-1/);
+});
+
+test("CLI: approval get without id → usage on stderr, exit 1", () => {
+  const r = run(["approval", "get"]);
+  assert.equal(r.code, 1);
+  assert.match(r.stderr, /approval get <id>/);
+});
+
+test("CLI: approval get 404 → exit 1 with clear message", () => {
+  const r = run(["approval", "get", "nope"], {
+    responses: [{ match: "/approvals/nope", status: 404, body: { error: "not found" } }],
+  });
+  assert.equal(r.code, 1);
+  assert.match(r.stderr, /404/);
+  assert.match(r.stderr, /not found/);
 });
 
 test("CLI: execution list → calls GET /executions (N+1 removed)", () => {
@@ -992,3 +1078,532 @@ test("CLI timeout: a real listener that accepts but never responds exits 3", asy
     server.close();
   }
 });
+
+// ===== Direct unit & handler request coverage (#46) =====
+
+interface CliHandlersModule {
+  buildIntentArgs: (args: string[]) => { intent: any; error?: string };
+  cmdPolicyGet: (agentId: string) => Promise<number>;
+  cmdActivityList: (agentId: string, limit: string) => Promise<number>;
+  cmdScheduleList: (agentId: string, limit: string) => Promise<number>;
+  cmdScheduleGet: (agentId: string, scheduleId: string) => Promise<number>;
+  cmdIntentSubmit: (agentId: string, args: string[], idempotencyKey: string | null) => Promise<number>;
+  cmdAgentCreate: (args: string[]) => Promise<number>;
+  cmdPolicyUpdate: (agentId: string, args: string[]) => Promise<number>;
+  cmdScheduleCreate: (agentId: string, args: string[]) => Promise<number>;
+  cmdScheduleUpdate: (agentId: string, args: string[]) => Promise<number>;
+  cmdSchedulePause: (agentId: string, scheduleId: string) => Promise<number>;
+  cmdScheduleResume: (agentId: string, scheduleId: string) => Promise<number>;
+  cmdScheduleDisable: (agentId: string, scheduleId: string) => Promise<number>;
+  cmdScheduleDelete: (agentId: string, scheduleId: string) => Promise<number>;
+  cmdApprovalGet: (id: string) => Promise<number>;
+}
+
+let cachedHandlersPromise: Promise<CliHandlersModule> | null = null;
+
+function loadCliHandlers(): Promise<CliHandlersModule> {
+  if (!cachedHandlersPromise) {
+    cachedHandlersPromise = (async () => {
+      const cliSource = readFileSync(CLI, "utf-8").replace(
+        /main\(\)\.then\([\s\S]*$/,
+        `export {
+  buildIntentArgs,
+  cmdPolicyGet,
+  cmdActivityList,
+  cmdScheduleList,
+  cmdScheduleGet,
+  cmdIntentSubmit,
+  cmdAgentCreate,
+  cmdPolicyUpdate,
+  cmdScheduleCreate,
+  cmdScheduleUpdate,
+  cmdSchedulePause,
+  cmdScheduleResume,
+  cmdScheduleDisable,
+  cmdScheduleDelete,
+  cmdApprovalGet,
+};\n`
+      );
+      const unitWrapperPath = CLI.replace(/\.ts$/, ".unit-wrapper.mts");
+      writeFileSync(unitWrapperPath, cliSource);
+      try {
+        return (await import(`${pathToFileURL(unitWrapperPath).href}?t=${Date.now()}`)) as CliHandlersModule;
+      } finally {
+        rmSync(unitWrapperPath, { force: true });
+      }
+    })();
+  }
+  return cachedHandlersPromise;
+}
+
+async function runHandlerWithMockFetch(
+  responses: Array<{ match: string; status: number; body: any }>,
+  fn: (mod: CliHandlersModule) => Promise<number>
+): Promise<{ code: number; requests: CapturedRequest[]; stdout: string; stderr: string }> {
+  const mod = await loadCliHandlers();
+  const realFetch = globalThis.fetch;
+  const origLog = console.log;
+  const origError = console.error;
+  const requests: CapturedRequest[] = [];
+  const out: string[] = [];
+  const err: string[] = [];
+
+  console.log = (...args: unknown[]) => out.push(args.map(String).join(" "));
+  console.error = (...args: unknown[]) => err.push(args.map(String).join(" "));
+  globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+    const u = String(url);
+    const parsedUrl = new URL(u);
+    const reqPath = parsedUrl.pathname + parsedUrl.search;
+    const method = String(init?.method ?? "GET").toUpperCase();
+    const headers = (init?.headers ?? {}) as Record<string, string>;
+    const rawBody = typeof init?.body === "string" ? init.body : undefined;
+    let parsedBody: any = rawBody;
+    if (rawBody !== undefined) {
+      try {
+        parsedBody = JSON.parse(rawBody);
+      } catch {
+        parsedBody = rawBody;
+      }
+    }
+    requests.push({ method, url: u, path: reqPath, headers, body: parsedBody });
+    const hit = responses.find((r) => u.includes(r.match));
+    if (!hit) {
+      return new Response(JSON.stringify({ error: "no mock for " + u }), { status: 500 });
+    }
+    return new Response(JSON.stringify(hit.body), { status: hit.status });
+  }) as typeof fetch;
+
+  try {
+    const code = await fn(mod);
+    return { code, requests, stdout: out.join("\n"), stderr: err.join("\n") };
+  } finally {
+    globalThis.fetch = realFetch;
+    console.log = origLog;
+    console.error = origError;
+  }
+}
+
+test("buildIntentArgs: payment happy path (with and without memo) and missing-args error", async () => {
+  const { buildIntentArgs } = await loadCliHandlers();
+
+  const withoutMemo = buildIntentArgs(["payment", "XLM", "25", "GDEST", "invoice-1"]);
+  assert.equal(withoutMemo.error, undefined);
+  assert.deepEqual(withoutMemo.intent, {
+    type: "payment",
+    asset: "XLM",
+    destination: "GDEST",
+    amount: "25",
+    reason: "invoice-1",
+  });
+
+  const withMemo = buildIntentArgs(["payment", "USDC", "100", "GDEST", "payroll", "memo-42"]);
+  assert.equal(withMemo.error, undefined);
+  assert.deepEqual(withMemo.intent, {
+    type: "payment",
+    asset: "USDC",
+    destination: "GDEST",
+    amount: "100",
+    reason: "payroll",
+    memo: "memo-42",
+  });
+
+  const missingArgs = buildIntentArgs(["payment", "XLM", "25", "GDEST"]);
+  assert.equal(missingArgs.intent, null);
+  assert.match(missingArgs.error ?? "", /payment requires: <asset> <amount> <destination> <reason> \[memo\]/);
+});
+
+test("buildIntentArgs: trustline with and without limit, and missing-args error", async () => {
+  const { buildIntentArgs } = await loadCliHandlers();
+
+  const noLimit = buildIntentArgs(["trustline", "USDC", "GISSUER", "enable usdc"]);
+  assert.equal(noLimit.error, undefined);
+  assert.deepEqual(noLimit.intent, {
+    type: "trustline",
+    assetCode: "USDC",
+    issuer: "GISSUER",
+    reason: "enable usdc",
+  });
+  assert.equal("limit" in noLimit.intent, false);
+
+  const withLimit = buildIntentArgs(["trustline", "USDC", "GISSUER", "enable usdc", "5000"]);
+  assert.equal(withLimit.error, undefined);
+  assert.deepEqual(withLimit.intent, {
+    type: "trustline",
+    assetCode: "USDC",
+    issuer: "GISSUER",
+    reason: "enable usdc",
+    limit: "5000",
+  });
+
+  const missing = buildIntentArgs(["trustline", "USDC", "GISSUER"]);
+  assert.equal(missing.intent, null);
+  assert.match(missing.error ?? "", /trustline requires: <assetCode> <issuer> <reason> \[limit\]/);
+});
+
+test("buildIntentArgs: contract_call valid JSON array, invalid JSON error, and non-array JSON error", async () => {
+  const { buildIntentArgs } = await loadCliHandlers();
+
+  const valid = buildIntentArgs(["contract_call", "CCONTRACT123", "transfer", '["GFROM","GTO",100]', "invoke transfer"]);
+  assert.equal(valid.error, undefined);
+  assert.deepEqual(valid.intent, {
+    type: "contract_call",
+    contractId: "CCONTRACT123",
+    function: "transfer",
+    args: ["GFROM", "GTO", 100],
+    reason: "invoke transfer",
+  });
+
+  const invalidJson = buildIntentArgs(["contract_call", "CCONTRACT123", "transfer", "{bad-json", "invoke transfer"]);
+  assert.equal(invalidJson.intent, null);
+  assert.match(invalidJson.error ?? "", /contract_call args must be a valid JSON array/);
+
+  const nonArrayJson = buildIntentArgs(["contract_call", "CCONTRACT123", "transfer", '{"not":"an array"}', "invoke transfer"]);
+  assert.equal(nonArrayJson.intent, null);
+  assert.match(nonArrayJson.error ?? "", /contract_call args must be a JSON array/);
+
+  const missingContractArgs = buildIntentArgs(["contract_call", "CCONTRACT123", "transfer"]);
+  assert.equal(missingContractArgs.intent, null);
+  assert.match(missingContractArgs.error ?? "", /contract_call requires/);
+});
+
+test("buildIntentArgs: account_settings rejection and unknown/missing type errors", async () => {
+  const { buildIntentArgs } = await loadCliHandlers();
+
+  const accountSettings = buildIntentArgs(["account_settings", "set", "value", "reason"]);
+  assert.equal(accountSettings.intent, null);
+  assert.match(accountSettings.error ?? "", /account_settings is not supported/);
+
+  const unknownType = buildIntentArgs(["swap", "XLM", "USDC"]);
+  assert.equal(unknownType.intent, null);
+  assert.match(unknownType.error ?? "", /unknown intent type 'swap'/);
+
+  const missingType = buildIntentArgs([]);
+  assert.equal(missingType.intent, null);
+  assert.match(missingType.error ?? "", /intent type required/);
+});
+
+test("cmdPolicyGet and cmdPolicyUpdate: GET and PUT /agents/:id/policy with parsed body", async () => {
+  const getRes = await runHandlerWithMockFetch(
+    [
+      {
+        match: "/agents/agent-1/policy",
+        status: 200,
+        body: { agentId: "agent-1", policy: { maxTxAmount: { XLM: "500" } }, version: 3 },
+      },
+    ],
+    (m) => m.cmdPolicyGet("agent-1")
+  );
+  assert.equal(getRes.code, 0);
+  assert.equal(getRes.requests.length, 1);
+  assert.equal(getRes.requests[0]!.method, "GET");
+  assert.equal(getRes.requests[0]!.path, "/agents/agent-1/policy");
+  assert.equal(getRes.requests[0]!.body, undefined);
+
+  const rulesPayload = { maxTxAmount: { XLM: "1000" }, allowedAssets: ["XLM", "USDC"] };
+  const updateRes = await runHandlerWithMockFetch(
+    [
+      {
+        match: "/agents/agent-1/policy",
+        status: 200,
+        body: { agentId: "agent-1", policy: rulesPayload, version: 4 },
+      },
+    ],
+    (m) => m.cmdPolicyUpdate("agent-1", ["--rules", JSON.stringify(rulesPayload)])
+  );
+  assert.equal(updateRes.code, 0);
+  assert.equal(updateRes.requests.length, 1);
+  assert.equal(updateRes.requests[0]!.method, "PUT");
+  assert.equal(updateRes.requests[0]!.path, "/agents/agent-1/policy");
+  assert.deepEqual(updateRes.requests[0]!.body, rulesPayload);
+
+  // Also verify via spawned CLI harness
+  const spawnedUpdate = run(["policy", "update", "agent-1", "--rules", JSON.stringify(rulesPayload)], {
+    responses: [{ match: "/agents/agent-1/policy", status: 200, body: { agentId: "agent-1", version: 4 } }],
+  });
+  assert.equal(spawnedUpdate.code, 0);
+  assert.equal(spawnedUpdate.requests[0]?.method, "PUT");
+  assert.equal(spawnedUpdate.requests[0]?.path, "/agents/agent-1/policy");
+  assert.deepEqual(spawnedUpdate.requests[0]?.body, rulesPayload);
+});
+
+test("cmdActivityList: GET /agents/:id/activity?limit= with default and explicit limit", async () => {
+  const defaultLimit = await runHandlerWithMockFetch(
+    [{ match: "/agents/agent-1/activity?limit=50", status: 200, body: { activity: [] } }],
+    (m) => m.cmdActivityList("agent-1", "")
+  );
+  assert.equal(defaultLimit.code, 0);
+  assert.equal(defaultLimit.requests.length, 1);
+  assert.equal(defaultLimit.requests[0]!.method, "GET");
+  assert.equal(defaultLimit.requests[0]!.path, "/agents/agent-1/activity?limit=50");
+
+  const customLimit = await runHandlerWithMockFetch(
+    [{ match: "/agents/agent-1/activity?limit=15", status: 200, body: { activity: [] } }],
+    (m) => m.cmdActivityList("agent-1", "15")
+  );
+  assert.equal(customLimit.code, 0);
+  assert.equal(customLimit.requests.length, 1);
+  assert.equal(customLimit.requests[0]!.method, "GET");
+  assert.equal(customLimit.requests[0]!.path, "/agents/agent-1/activity?limit=15");
+
+  const invalidLimit = await runHandlerWithMockFetch([], (m) => m.cmdActivityList("agent-1", "101"));
+  assert.equal(invalidLimit.code, 1);
+  assert.equal(invalidLimit.requests.length, 0);
+});
+
+test("cmdAgentCreate: POST /agents with parsed displayName, description, capabilities, and stellarAddress", async () => {
+  const createRes = await runHandlerWithMockFetch(
+    [
+      {
+        match: "/agents",
+        status: 201,
+        body: { agent: { id: "agent-created", displayName: "Treasury Bot", status: "active" } },
+      },
+    ],
+    (m) =>
+      m.cmdAgentCreate([
+        "Treasury Bot",
+        "--description",
+        "Automated treasury",
+        "--capabilities",
+        "payment, trustline",
+        "--stellar-address",
+        "GBDMPFEAZOQW7XVTAVPXBT7PPA4ZZW7ZFJW5KJNBYRPJ35H6ASW4ASE3",
+      ])
+  );
+  assert.equal(createRes.code, 0);
+  assert.equal(createRes.requests.length, 1);
+  assert.equal(createRes.requests[0]!.method, "POST");
+  assert.equal(createRes.requests[0]!.path, "/agents");
+  assert.deepEqual(createRes.requests[0]!.body, {
+    displayName: "Treasury Bot",
+    description: "Automated treasury",
+    capabilities: ["payment", "trustline"],
+    stellarAddress: "GBDMPFEAZOQW7XVTAVPXBT7PPA4ZZW7ZFJW5KJNBYRPJ35H6ASW4ASE3",
+  });
+});
+
+test("cmdIntentSubmit: POST /agents/:id/intents with parsed intent body and Idempotency-Key header when supplied", async () => {
+  const withKey = await runHandlerWithMockFetch(
+    [
+      {
+        match: "/agents/agent-1/intents",
+        status: 202,
+        body: { activityId: "act-100", agentId: "agent-1", status: "queued" },
+      },
+    ],
+    (m) =>
+      m.cmdIntentSubmit(
+        "agent-1",
+        ["payment", "XLM", "50", "GDEST", "rebalance", "memo-1", "--idempotency-key", "idem-key-123"],
+        null
+      )
+  );
+  assert.equal(withKey.code, 0);
+  assert.equal(withKey.requests.length, 1);
+  assert.equal(withKey.requests[0]!.method, "POST");
+  assert.equal(withKey.requests[0]!.path, "/agents/agent-1/intents");
+  assert.equal(withKey.requests[0]!.headers["Idempotency-Key"], "idem-key-123");
+  assert.deepEqual(withKey.requests[0]!.body, {
+    type: "payment",
+    asset: "XLM",
+    destination: "GDEST",
+    amount: "50",
+    reason: "rebalance",
+    memo: "memo-1",
+  });
+
+  const withoutKey = await runHandlerWithMockFetch(
+    [
+      {
+        match: "/agents/agent-1/intents",
+        status: 202,
+        body: { activityId: "act-101", agentId: "agent-1", status: "queued" },
+      },
+    ],
+    (m) => m.cmdIntentSubmit("agent-1", ["trustline", "USDC", "GISSUER", "open usdc", "1000"], null)
+  );
+  assert.equal(withoutKey.code, 0);
+  assert.equal(withoutKey.requests.length, 1);
+  assert.equal(withoutKey.requests[0]!.method, "POST");
+  assert.equal(withoutKey.requests[0]!.path, "/agents/agent-1/intents");
+  assert.equal(withoutKey.requests[0]!.headers["Idempotency-Key"], undefined);
+  assert.deepEqual(withoutKey.requests[0]!.body, {
+    type: "trustline",
+    assetCode: "USDC",
+    issuer: "GISSUER",
+    reason: "open usdc",
+    limit: "1000",
+  });
+
+  // Also verify spawned CLI request capture for Idempotency-Key
+  const spawnedIntent = run(
+    ["intent", "submit", "agent-1", "payment", "XLM", "10", "GDEST", "pay", "--idempotency-key", "spawn-idem-1"],
+    {
+      responses: [
+        { match: "/agents/agent-1/intents", status: 202, body: { activityId: "act-102", agentId: "agent-1", status: "queued" } },
+      ],
+    }
+  );
+  assert.equal(spawnedIntent.code, 0);
+  assert.equal(spawnedIntent.requests[0]?.method, "POST");
+  assert.equal(spawnedIntent.requests[0]?.path, "/agents/agent-1/intents");
+  assert.equal(spawnedIntent.requests[0]?.headers["Idempotency-Key"], "spawn-idem-1");
+});
+
+test("All schedule handlers (cmdScheduleList, cmdScheduleGet, cmdScheduleCreate, cmdScheduleUpdate, cmdSchedulePause, cmdScheduleResume, cmdScheduleDisable, cmdScheduleDelete): routes, methods, and bodies", async () => {
+  // Specific route prefixes come before general /schedules match
+  const scheduleResponses = [
+    { match: "/agents/agent-1/schedules/sch-1/pause", status: 200, body: { schedule: { id: "sch-1", status: "paused" } } },
+    { match: "/agents/agent-1/schedules/sch-1/resume", status: 200, body: { schedule: { id: "sch-1", status: "active" } } },
+    { match: "/agents/agent-1/schedules/sch-1/disable", status: 200, body: { schedule: { id: "sch-1", status: "disabled" } } },
+    {
+      match: "/agents/agent-1/schedules/sch-1",
+      status: 200,
+      body: {
+        schedule: {
+          id: "sch-1",
+          agentId: "agent-1",
+          status: "active",
+          scheduleExpression: "0 12 * * *",
+          timezone: "UTC",
+          nextRunAt: "2026-01-01T12:00:00Z",
+          lastRunAt: null,
+          intent: { type: "payment", asset: "XLM", amount: "10", destination: "GDEST", reason: "daily" },
+          createdAt: "2026-01-01T00:00:00Z",
+          updatedAt: "2026-01-01T00:00:00Z",
+        },
+      },
+    },
+    {
+      match: "/agents/agent-1/schedules?limit=25",
+      status: 200,
+      body: { schedules: [] },
+    },
+    {
+      match: "/agents/agent-1/schedules",
+      status: 201,
+      body: {
+        schedule: {
+          id: "sch-1",
+          agentId: "agent-1",
+          scheduleExpression: "0 * * * *",
+          timezone: "America/New_York",
+          nextRunAt: "2026-01-01T01:00:00Z",
+        },
+      },
+    },
+  ];
+
+  const listRes = await runHandlerWithMockFetch(scheduleResponses, (m) => m.cmdScheduleList("agent-1", "25"));
+  assert.equal(listRes.code, 0);
+  assert.equal(listRes.requests[0]!.method, "GET");
+  assert.equal(listRes.requests[0]!.path, "/agents/agent-1/schedules?limit=25");
+
+  const getRes = await runHandlerWithMockFetch(scheduleResponses, (m) => m.cmdScheduleGet("agent-1", "sch-1"));
+  assert.equal(getRes.code, 0);
+  assert.equal(getRes.requests[0]!.method, "GET");
+  assert.equal(getRes.requests[0]!.path, "/agents/agent-1/schedules/sch-1");
+
+  const createRes = await runHandlerWithMockFetch(scheduleResponses, (m) =>
+    m.cmdScheduleCreate("agent-1", [
+      "0 * * * *",
+      "payment",
+      "XLM",
+      "10",
+      "GDEST",
+      "daily",
+      "--timezone",
+      "America/New_York",
+    ])
+  );
+  assert.equal(createRes.code, 0);
+  assert.equal(createRes.requests[0]!.method, "POST");
+  assert.equal(createRes.requests[0]!.path, "/agents/agent-1/schedules");
+  assert.deepEqual(createRes.requests[0]!.body, {
+    intent: {
+      type: "payment",
+      asset: "XLM",
+      destination: "GDEST",
+      amount: "10",
+      reason: "daily",
+    },
+    scheduleExpression: "0 * * * *",
+    timezone: "America/New_York",
+  });
+
+  const updateRes = await runHandlerWithMockFetch(scheduleResponses, (m) =>
+    m.cmdScheduleUpdate("agent-1", ["sch-1", "0 12 * * *"])
+  );
+  assert.equal(updateRes.code, 0);
+  assert.equal(updateRes.requests[0]!.method, "PATCH");
+  assert.equal(updateRes.requests[0]!.path, "/agents/agent-1/schedules/sch-1");
+  assert.deepEqual(updateRes.requests[0]!.body, { scheduleExpression: "0 12 * * *" });
+
+  const pauseRes = await runHandlerWithMockFetch(scheduleResponses, (m) => m.cmdSchedulePause("agent-1", "sch-1"));
+  assert.equal(pauseRes.code, 0);
+  assert.equal(pauseRes.requests[0]!.method, "POST");
+  assert.equal(pauseRes.requests[0]!.path, "/agents/agent-1/schedules/sch-1/pause");
+  assert.deepEqual(pauseRes.requests[0]!.body, {});
+
+  const resumeRes = await runHandlerWithMockFetch(scheduleResponses, (m) => m.cmdScheduleResume("agent-1", "sch-1"));
+  assert.equal(resumeRes.code, 0);
+  assert.equal(resumeRes.requests[0]!.method, "POST");
+  assert.equal(resumeRes.requests[0]!.path, "/agents/agent-1/schedules/sch-1/resume");
+  assert.deepEqual(resumeRes.requests[0]!.body, {});
+
+  const disableRes = await runHandlerWithMockFetch(scheduleResponses, (m) => m.cmdScheduleDisable("agent-1", "sch-1"));
+  assert.equal(disableRes.code, 0);
+  assert.equal(disableRes.requests[0]!.method, "POST");
+  assert.equal(disableRes.requests[0]!.path, "/agents/agent-1/schedules/sch-1/disable");
+  assert.deepEqual(disableRes.requests[0]!.body, {});
+
+  const deleteRes = await runHandlerWithMockFetch(scheduleResponses, (m) => m.cmdScheduleDelete("agent-1", "sch-1"));
+  assert.equal(deleteRes.code, 0);
+  assert.equal(deleteRes.requests[0]!.method, "DELETE");
+  assert.equal(deleteRes.requests[0]!.path, "/agents/agent-1/schedules/sch-1");
+  assert.equal(deleteRes.requests[0]!.body, undefined);
+});
+
+test("Handler error paths: non-2xx on schedule command, invalid JSON in contract_call args, and missing required args", async () => {
+  // 1. Non-2xx on a schedule command
+  const scheduleError = await runHandlerWithMockFetch(
+    [{ match: "/agents/agent-1/schedules/sch-1/pause", status: 409, body: { error: "schedule already paused" } }],
+    (m) => m.cmdSchedulePause("agent-1", "sch-1")
+  );
+  assert.equal(scheduleError.code, 1);
+  assert.equal(scheduleError.requests.length, 1);
+  assert.equal(scheduleError.requests[0]!.method, "POST");
+  assert.equal(scheduleError.requests[0]!.path, "/agents/agent-1/schedules/sch-1/pause");
+  assert.match(scheduleError.stderr, /409/);
+
+  // 2. Invalid JSON and non-array JSON in contract_call args
+  const invalidJsonSubmit = await runHandlerWithMockFetch([], (m) =>
+    m.cmdIntentSubmit("agent-1", ["contract_call", "CCONTRACT", "fn", "{invalid", "reason"], null)
+  );
+  assert.equal(invalidJsonSubmit.code, 1);
+  assert.equal(invalidJsonSubmit.requests.length, 0);
+  assert.match(invalidJsonSubmit.stderr, /valid JSON array/);
+
+  const nonArrayScheduleCreate = await runHandlerWithMockFetch([], (m) =>
+    m.cmdScheduleCreate("agent-1", ["0 * * * *", "contract_call", "CCONTRACT", "fn", '{"obj":true}', "reason"])
+  );
+  assert.equal(nonArrayScheduleCreate.code, 1);
+  assert.equal(nonArrayScheduleCreate.requests.length, 0);
+  assert.match(nonArrayScheduleCreate.stderr, /must be a JSON array/);
+
+  // 3. Missing required arguments across handlers
+  assert.equal((await runHandlerWithMockFetch([], (m) => m.cmdPolicyGet(""))).code, 1);
+  assert.equal((await runHandlerWithMockFetch([], (m) => m.cmdPolicyUpdate("", []))).code, 1);
+  assert.equal((await runHandlerWithMockFetch([], (m) => m.cmdActivityList("", ""))).code, 1);
+  assert.equal((await runHandlerWithMockFetch([], (m) => m.cmdScheduleList("", ""))).code, 1);
+  assert.equal((await runHandlerWithMockFetch([], (m) => m.cmdScheduleGet("agent-1", ""))).code, 1);
+  assert.equal((await runHandlerWithMockFetch([], (m) => m.cmdScheduleCreate("agent-1", ["0 * * * *"]))).code, 1);
+  assert.equal((await runHandlerWithMockFetch([], (m) => m.cmdScheduleUpdate("agent-1", ["sch-1"]))).code, 1);
+  assert.equal((await runHandlerWithMockFetch([], (m) => m.cmdSchedulePause("agent-1", ""))).code, 1);
+  assert.equal((await runHandlerWithMockFetch([], (m) => m.cmdScheduleResume("agent-1", ""))).code, 1);
+  assert.equal((await runHandlerWithMockFetch([], (m) => m.cmdScheduleDisable("agent-1", ""))).code, 1);
+  assert.equal((await runHandlerWithMockFetch([], (m) => m.cmdScheduleDelete("agent-1", ""))).code, 1);
+  assert.equal((await runHandlerWithMockFetch([], (m) => m.cmdAgentCreate([]))).code, 1);
+  assert.equal((await runHandlerWithMockFetch([], (m) => m.cmdIntentSubmit("", [], null))).code, 1);
+});
+

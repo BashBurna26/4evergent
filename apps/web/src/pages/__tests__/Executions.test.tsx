@@ -184,6 +184,41 @@ describe('Executions page', () => {
     });
   });
 
+  it('renders cancelled status correctly and includes Cancelled in filter options', async () => {
+    mockListAllExecutions.mockResolvedValue({
+      executions: [
+        {
+          id: 'exec-cancelled',
+          ownerId: 'owner-a',
+          agentId: 'agent-a',
+          approvalId: null,
+          activityId: null,
+          intent: { type: 'payment', asset: 'XLM', amount: '10', destination: 'G...', reason: 'test' },
+          status: 'cancelled',
+          policyDecision: null,
+          simulationResult: null,
+          txHash: null,
+          error: 'cancelled by user',
+          attempt: 0,
+          nextRetryAt: null,
+          startedAt: null,
+          completedAt: '2026-01-01T00:00:00Z',
+          errorClass: null,
+          createdAt: '2026-01-01T00:00:00Z',
+          updatedAt: '2026-01-01T00:00:00Z',
+        },
+      ],
+    });
+    mockGetQueueStatus.mockResolvedValue({ running: true, byStatus: { cancelled: 1 } });
+    render(<MemoryRouter><Executions /></MemoryRouter>);
+    await waitFor(() => {
+      const badge = screen.getByText('Cancelled', { selector: '.badge' });
+      expect(badge).toBeInTheDocument();
+      expect(badge).toHaveClass('badge-neutral');
+    });
+    expect(screen.getByRole('option', { name: 'Cancelled' })).toBeInTheDocument();
+  });
+
   it('calls listAllExecutions and never listAgents (N+1 removed)', async () => {
     mockListAllExecutions.mockResolvedValue({ executions: [] });
     mockGetQueueStatus.mockResolvedValue({ running: false, byStatus: {} });

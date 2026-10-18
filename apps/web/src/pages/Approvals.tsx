@@ -9,6 +9,7 @@ const PAGE_SIZE = 50;
 export default function Approvals() {
   const [approvals, setApprovals] = useState<ApprovalRecord[] | null>(null);
   const [hasMore, setHasMore] = useState(false);
+  const [total, setTotal] = useState<number | null>(null);
   const [nextOffset, setNextOffset] = useState(0);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -19,6 +20,7 @@ export default function Approvals() {
       const r = await api.listApprovals('pending_approval', PAGE_SIZE, offset);
       setApprovals(replace ? r.approvals : (prev) => (prev ?? []).concat(r.approvals));
       setHasMore(r.hasMore);
+      setTotal(r.total ?? null);
       setNextOffset(offset + r.approvals.length);
     } catch (e: any) {
       setError(e.message);
@@ -57,6 +59,9 @@ export default function Approvals() {
         <div>
           <h1>Approvals</h1>
           <p className="muted">Operational review queue for human-in-the-loop authorization.</p>
+          {total !== null && total > approvals.length && (
+            <p className="muted">Showing {approvals.length} of {total} pending approvals</p>
+          )}
         </div>
       </div>
 

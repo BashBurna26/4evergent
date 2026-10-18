@@ -22,7 +22,7 @@ A capability is a named, policy-governed action an agent may perform on Stellar.
 | Contract invocation | ❌ Not supported | Policy denies by default |
 | Account settings | ✅ Supported | `AccountSettingsIntent` with `setting` + `value` — `home_domain`, `inflation_destination`, `signer`, `thresholds`, `set_flags`, `clear_flags` |
 | Token issuance | ❌ Not supported | — |
-| Soroban contracts | ⚠️ AgentRegistry deployed on Testnet | Contract exists and is callable directly; the transaction pipeline still does not invoke contracts (`contract_call` policy-denied by default). See `docs/testnet.md`. |
+| Soroban contracts | ⚠️ AgentRegistry deployed on Testnet | Contract exists and is callable directly; the transaction pipeline still does not invoke contracts (`contract_call` policy-denied by default). See `docs/testnet.md` and the [integration guide](soroban-integration.md). |
 
 ### Asset representation
 

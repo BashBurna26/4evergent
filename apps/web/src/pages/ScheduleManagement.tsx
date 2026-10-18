@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api';
+import { Skeleton } from '../components';
 import type { ScheduleRecord, SubmitPaymentIntent } from '../types';
 
 interface ScheduleManagementProps {
@@ -119,7 +120,7 @@ export function ScheduleManagement({ agentId, onError }: ScheduleManagementProps
       )}
 
       {schedules === null ? (
-        <div className="skeleton">Loading schedules...</div>
+        <Skeleton label="Loading schedules..." />
       ) : schedules.length === 0 ? (
         <div className="empty-state">
           <p>No schedules for this agent. Create a recurring schedule to automate agent operations.</p>
