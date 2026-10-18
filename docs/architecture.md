@@ -129,7 +129,23 @@ All decisions recorded via the ADR-lite convention. Each entry: **Status | Conte
 
 **Consequences:** Transient storage is bounded over repeated sweeps without a schema migration or a long-held write transaction. A large backlog drains in batches. Recent expired sessions and the current spending day remain available; setting a zero window explicitly keeps all rows.
 
-## ADR-015: Bounded missed schedule runs
+## ADR-015: agent-registry rewritten from scaffold to deployed contract
+
+**Status:** Accepted | 2026-09-28
+
+**Context:** `contracts/agent-registry` was originally committed as an unimplemented scaffold: `DESIGN.md` described intent and API mapping only, with no authorization, no validation, and no state semantics. The contract has since been implemented and deployed to Testnet (see `docs/testnet.md` for the contract ID and wasm hash). The scaffold-era `DESIGN.md` still claimed "No implementation yet" and described a contract that no longer exists, misleading contributors who read it first.
+
+**Decision:** Treat `contracts/agent-registry/src/lib.rs` as the source of truth and rewrite `contracts/agent-registry/DESIGN.md` as a post-rewrite design document grounded in the deployed code. The rewrite documents the four entrypoints (`register`, `update_metadata`, `deactivate`, `query`), the `AgentInfo`/`DataKey` data model, the 9-variant `Error` enum, and the TTL policy. Authorization was added to all three mutating entrypoints: each calls `caller.require_auth()` as its first statement, and `register` additionally calls `stellar_address.require_auth()` to bind the on-chain identity to the Stellar account. Open design questions (events #5, id character set #4, validation hardening #8, anti-squatting #7, upgrade path #104, deactivate irreversibility #6, TTL policy #19) are referenced, not decided.
+
+**Consequences:**
+- `DESIGN.md` matches the deployed contract; every claim is checkable against `src/lib.rs` with file+line citations.
+- The pre-rewrite scaffold description is removed; the deployed contract is the only documented behaviour.
+- Authorization is now part of the documented contract surface: mutating entrypoints require the owner's signature, and `register` binds the agent to the Stellar address that authorized it.
+- Open questions remain explicitly open; the document does not present #6, #7, or #19 as settled.
+- No contract behaviour, validation, events, TTL, or permissions-crate code was changed by this decision; it is documentation-only.
+- Deploy commands and the authoritative contract ID/wasm hash stay in `docs/testnet.md` and are linked, not duplicated.
+
+## ADR-016: Bounded missed schedule runs
 
 **Status:** Accepted
 
@@ -139,7 +155,7 @@ All decisions recorded via the ADR-lite convention. Each entry: **Status | Conte
 
 **Consequences:** Restart recovery cannot generate an unbounded catch-up burst. A skipped run is visible in server logs; users needing a longer grace period can configure it. Normal on-time execution retains the existing policy and approval pipeline.
 
-## ADR-016: Browser sessions use an HttpOnly cookie, not a token
+## ADR-017: Browser sessions use an HttpOnly cookie, not a token
 
 **Status:** Accepted
 
@@ -147,9 +163,9 @@ All decisions recorded via the ADR-lite convention. Each entry: **Status | Conte
 
 **Decision:** Browser sessions are opaque 32-byte random tokens (`randomBytes(32).toString("hex")`, `apps/api/src/auth.ts:385`) held in an `HttpOnly` cookie named `four_eg_session` (`apps/api/src/auth.ts:38`, cookie built at `apps/api/src/auth.ts:366-376`). The token is a lookup key into a server-side session record; no user identity, role, or claim is encoded in it. `Path=/`, `SameSite=Lax` by default (`COOKIE_SAMESITE`, `apps/api/src/auth.ts:367`), and `Secure` when the request is TLS or `x-forwarded-proto: https` (`cookieSecure()`, `apps/api/src/auth.ts:358-364`). Session lifetime is `SESSION_TTL_SECONDS`, default 86400 (24h), clamped to the range 60s–30d (`apps/api/src/auth.ts:344`). Logout deletes the server-side record, so the cookie stops resolving immediately (`apps/api/src/auth.ts`, `/auth/logout`).
 
-**Consequences:** A stolen cookie is a bearer credential, but script injection cannot read it. Session revocation is real and immediate. Because the cookie is sent automatically, state-changing requests need a second CSRF layer: cookie-authenticated non-GET/HEAD/OPTIONS requests must carry the `X-Requested-With` header (`apps/api/src/auth.ts:23`, enforced at `apps/api/src/auth.ts:737`); `SameSite=Lax` is the first layer, the header is the second. Machine clients (CLI, service integrations) keep using the `Authorization: Bearer` path — see ADR-017. Cross-site cookie use requires `COOKIE_SAMESITE=none`, which forces `Secure` and is opt-in only (`apps/api/src/auth.ts:374`).
+**Consequences:** A stolen cookie is a bearer credential, but script injection cannot read it. Session revocation is real and immediate. Because the cookie is sent automatically, state-changing requests need a second CSRF layer: cookie-authenticated non-GET/HEAD/OPTIONS requests must carry the `X-Requested-With` header (`apps/api/src/auth.ts:23`, enforced at `apps/api/src/auth.ts:737`); `SameSite=Lax` is the first layer, the header is the second. Machine clients (CLI, service integrations) keep using the `Authorization: Bearer` path — see ADR-018. Cross-site cookie use requires `COOKIE_SAMESITE=none`, which forces `Secure` and is opt-in only (`apps/api/src/auth.ts:374`).
 
-## ADR-017: Three human identity providers, kept separate from API-key machine auth
+## ADR-018: Three human identity providers, kept separate from API-key machine auth
 
 **Status:** Accepted
 
@@ -158,14 +174,14 @@ All decisions recorded via the ADR-lite convention. Each entry: **Status | Conte
 **Decision:** The user-auth module (`apps/api/src/auth.ts`, wired at `apps/api/src/index.ts:52` and mounted before the auth gate at `apps/api/src/index.ts:596-597`) implements three providers, all converging on the same session cookie:
 
 - **Email + password** — scrypt (Node default N=16384, r=8, p=1, 64-byte key) with a per-user 16-byte random salt, compared with `timingSafeEqual` (`apps/api/src/auth.ts:289-296`). Registration is open by default (`ALLOW_REGISTRATION`, default `1`).
-- **Stellar wallet signature** — a server-issued, single-use, expiring challenge is signed by the user's keypair; only the public key is ever stored (`apps/api/src/auth.ts`, `/auth/stellar/challenge` + `/auth/stellar/verify`). See ADR-018.
+- **Stellar wallet signature** — a server-issued, single-use, expiring challenge is signed by the user's keypair; only the public key is ever stored (`apps/api/src/auth.ts`, `/auth/stellar/challenge` + `/auth/stellar/verify`). See ADR-019.
 - **Google OAuth authorization-code flow** — server-side code exchange at `https://oauth2.googleapis.com/token`, `id_token` verified against Google's JWKS for issuer, audience (`clientId`), and nonce (`apps/api/src/auth.ts:686-698`). The `client_secret` never leaves the server.
 
 Machine clients are unchanged: `API_KEYS` maps a bearer secret to exactly one server-configured `ownerId` (`docs/security-model.md`, "API Authentication"). The two paths are ordered, not merged — the session principal takes precedence and the bearer provider is the fallback, never the reverse (`apps/api/src/auth.ts:8-11`, resolution at `apps/api/src/index.ts:164-172`).
 
 **Consequences:** A human session and a machine key are never interchangeable credentials. Adding a fourth provider means adding a branch that produces the same session record, not a new session model. Email registration being open is a deliberate bootstrap choice for a testnet MVP with no invite system; the documented upgrade path is `allowRegistration=false` plus a seeded admin (`apps/api/src/auth.ts:25-26`).
 
-## ADR-018: Stellar challenge binds purpose, account, domain, id, time, and nonce
+## ADR-019: Stellar challenge binds purpose, account, domain, id, time, and nonce
 
 **Status:** Accepted
 
@@ -173,9 +189,9 @@ Machine clients are unchanged: `API_KEYS` maps a bearer secret to exactly one se
 
 **Decision:** The challenge message is a fixed multi-line string built by `buildStellarChallengeMessage()` (`apps/api/src/auth.ts:300-317`) binding seven fields: a purpose line ("4evergent authentication challenge"), the `account` public key, the `domain` (`STELLAR_DOMAIN`, default derived from `WEB_ORIGIN`'s hostname), the server-generated `challenge` id, `issued` and `expires` timestamps, and a server `nonce`. The challenge is stored server-side with its expiry and consumed on use: `/auth/stellar/verify` rejects a challenge that is unknown, already used, expired, or bound to a different public key (`apps/api/src/auth.ts:576-578`), and marks it used even on success (`apps/api/src/auth.ts:624`). Signature verification accepts both raw ed25519 over the message and the SEP-53 `sha256("Stellar Signed Message:\n" + message)` digest form that Freighter produces (`apps/api/src/auth.ts:600-615`).
 
-**Consequences:** A signature is replayable only within its own challenge window, for its own account, on its own domain — cross-service and cross-site replay fail on the domain binding. The `domain` string is the anti-phishing anchor: it must match the service the user believes they are using, which is why it is configuration (`STELLAR_DOMAIN`) and not a hardcoded hostname. Challenge state is in-memory, so the single-use guarantee is per-process — see ADR-019.
+**Consequences:** A signature is replayable only within its own challenge window, for its own account, on its own domain — cross-service and cross-site replay fail on the domain binding. The `domain` string is the anti-phishing anchor: it must match the service the user believes they are using, which is why it is configuration (`STELLAR_DOMAIN`) and not a hardcoded hostname. Challenge state is in-memory, so the single-use guarantee is per-process — see ADR-020.
 
-## ADR-019: OAuth and challenge state is in-memory, so the API is single-process
+## ADR-020: OAuth and challenge state is in-memory, so the API is single-process
 
 **Status:** Accepted
 
@@ -185,11 +201,11 @@ Machine clients are unchanged: `API_KEYS` maps a bearer secret to exactly one se
 
 **Consequences:** Running more than one API instance behind a load balancer breaks login: a callback or challenge verification can land on a process that never saw the state, and the single-use guarantee does not hold across processes. This is stated as a real limitation, not hidden — horizontal scaling requires moving this state to a shared store first. Sessions themselves survive a restart when SQLite is configured, and expired sessions are swept by the retention worker (ADR-014) via `sweepExpiredSessions()` (`apps/api/src/auth.ts:774`).
 
-## ADR-020: Login-endpoint rate limiting is undecided
+## ADR-021: Login-endpoint rate limiting is undecided
 
 **Status:** Proposed
 
-**Context:** The auth module exposes unauthenticated endpoints that do work per request: `POST /auth/register`, `POST /auth/login/email` (scrypt is deliberately slow, so each attempt costs CPU), `GET /auth/stellar/challenge`, and `GET /auth/google/start`. No rate limit, lockout, or backoff is implemented in `apps/api/src/auth.ts`. Open registration (ADR-017) plus an unthrottled login endpoint is an enumeration and credential-stuffing surface.
+**Context:** The auth module exposes unauthenticated endpoints that do work per request: `POST /auth/register`, `POST /auth/login/email` (scrypt is deliberately slow, so each attempt costs CPU), `GET /auth/stellar/challenge`, and `GET /auth/google/start`. No rate limit, lockout, or backoff is implemented in `apps/api/src/auth.ts`. Open registration (ADR-018) plus an unthrottled login endpoint is an enumeration and credential-stuffing surface.
 
 **Decision:** None yet. The options are per-IP throttling in front of the API (reverse proxy), an in-process counter keyed by IP/account, or deferring to an edge/WAF rule. No answer is recorded here because the deployment topology that would decide it (single process vs. multiple instances, whether a proxy already terminates this) is not fixed.
 
