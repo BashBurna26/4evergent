@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api';
 import type { ExecutionRecord, QueueSummary, ExecutionStatus } from '../types';
-import { PaginationFooter } from '../components';
+import { EmptyState, PaginationFooter, Skeleton } from '../components';
 
 type StatusFilter = 'all' | ExecutionStatus;
 
@@ -14,6 +14,7 @@ const FILTER_OPTIONS: { value: StatusFilter; label: string }[] = [
   { value: 'confirmed', label: 'Confirmed' },
   { value: 'failed', label: 'Failed' },
   { value: 'dead_letter', label: 'Dead Letter' },
+  { value: 'cancelled', label: 'Cancelled' },
 ];
 
 const PAGE_SIZE = 50;
@@ -26,6 +27,7 @@ function statusLabel(status: ExecutionStatus): string {
     case 'confirmed': return 'Confirmed';
     case 'failed': return 'Failed';
     case 'dead_letter': return 'Dead Letter';
+    case 'cancelled': return 'Cancelled';
   }
 }
 
@@ -37,6 +39,7 @@ function statusClass(status: ExecutionStatus): string {
     case 'confirmed': return 'badge-ok';
     case 'failed': return 'badge-err';
     case 'dead_letter': return 'badge-err';
+    case 'cancelled': return 'badge-neutral';
   }
 }
 
@@ -200,15 +203,3 @@ function Card({ title, value }: { title: string; value: string }) {
   );
 }
 
-function Skeleton({ label }: { label: string }) {
-  return <div className="skeleton">{label}</div>;
-}
-
-function EmptyState({ title, message }: { title: string; message: string }) {
-  return (
-    <div className="empty-state">
-      <h2>{title}</h2>
-      <p>{message}</p>
-    </div>
-  );
-}

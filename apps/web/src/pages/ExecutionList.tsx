@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { useParams } from 'react-router-dom';
 import { api } from '../api';
 import type { ExecutionRecord, ExecutionStatus } from '../types';
-import { PaginationFooter } from '../components';
+import { PaginationFooter, Skeleton } from '../components';
 
 interface ExecutionListProps {
   agentId: string;
@@ -20,6 +20,7 @@ function statusLabel(status: ExecutionStatus): string {
     case 'confirmed': return 'Confirmed';
     case 'failed': return 'Failed';
     case 'dead_letter': return 'Dead Letter';
+    case 'cancelled': return 'Cancelled';
   }
 }
 
@@ -31,6 +32,7 @@ function statusClass(status: ExecutionStatus): string {
     case 'confirmed': return 'badge-ok';
     case 'failed': return 'badge-err';
     case 'dead_letter': return 'badge-err';
+    case 'cancelled': return 'badge-neutral';
   }
 }
 
@@ -68,7 +70,7 @@ export function ExecutionList({ agentId: propAgentId, onError, onExecutionClick 
 
   if (!agentId) return <div className="empty-state"><p>No agent specified.</p></div>;
   if (error) return <div className="error">{error}</div>;
-  if (executions === null) return <div className="skeleton">Loading executions...</div>;
+  if (executions === null) return <Skeleton label="Loading executions..." />;
   if (executions.length === 0) {
     return (
       <div className="empty-state">

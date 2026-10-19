@@ -138,7 +138,7 @@ export const api = {
     if (statusFilter) params.set("status", statusFilter);
     params.set("limit", String(limit));
     params.set("offset", String(offset));
-    return request<{ approvals: ApprovalRecord[]; hasMore: boolean }>(`/approvals?${params}`);
+    return request<{ approvals: ApprovalRecord[]; hasMore: boolean; truncated: boolean; total: number }>(`/approvals?${params}`);
   },
 
   approvalDetail: (approvalId: string) =>

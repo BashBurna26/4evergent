@@ -36,6 +36,8 @@ export function StatusBadge({ status }: { status: string }) {
     cls = 'badge-warn';
   } else if (status === 'active') {
     cls = 'badge-ok';
+  } else if (status === 'cancelled') {
+    cls = 'badge-neutral';
   } else {
     cls = 'badge-neutral';
   }
@@ -81,7 +83,11 @@ export function Card({ title, value, label }: { title: string; value: string; la
    ========================================================================== */
 
 export function Skeleton({ label }: { label: string }) {
-  return <div className="skeleton">{label}</div>;
+  return (
+    <div className="skeleton" role="status" aria-live="polite" aria-label={label}>
+      {label}
+    </div>
+  );
 }
 
 /* ==========================================================================

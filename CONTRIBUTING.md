@@ -67,6 +67,29 @@ Each package uses `tsx --test` as its test runner. Tests live in `test/` within 
 
 ### Test coverage
 
+Run coverage for every test stack with:
+
+```bash
+pnpm test:coverage
+```
+
+The Node test-runner stacks use Node's built-in coverage reporter through `tsx`; the web stack uses Vitest's V8 provider (`@vitest/coverage-v8`, a web-only development dependency). The command prints each stack's per-file report and a combined summary. Rust contract tests are not part of this command.
+
+The baseline below was measured at the issue branch's merge base on Node 24.18.0 with `pnpm test:coverage` (662 Node tests and 222 web tests passed). Integer thresholds are set below measured line and branch results by rounding down to whole percentages; the 100% shared line result uses a 99% gate for a small cushion. The CI workflow uses Node 22; these floors are deliberately conservative, but should be revisited if the Node 22 report differs.
+
+| Stack | Tests passed | Lines | Branches | Functions | Line gate | Branch gate |
+|-------|-------------:|------:|---------:|----------:|----------:|------------:|
+| API | 335 | 87.68% | 74.64% | 85.78% | 87% | 74% |
+| CLI | 106 | 72.13% | 53.14% | 79.21% | 72% | 52% |
+| Database | 101 | 74.08% | 84.52% | 60.62% | 74% | 84% |
+| Policy | 31 | 65.36% | 90.54% | 91.67% | 65% | 90% |
+| Stellar | 68 | 70.10% | 75.72% | 89.13% | 70% | 75% |
+| Agent core | 11 | 52.31% | 62.50% | 46.67% | 52% | 62% |
+| Shared | 10 | 100.00% | 92.86% | 100.00% | 99% | 92% |
+| Web | 222 | 82.07% | 80.91% | 75.00% | 81% | 80% |
+
+The CLI branch result varied slightly across two complete runs (52.96% and 53.14%); the recorded value is from the final run, and its 52% gate remains below both measurements. No CI coverage step is added, so the normal workflow does not run the suite twice; use `pnpm test:coverage` locally to see reports and enforce the measured floors.
+
 Every capability must include:
 - Unit tests for intent validation
 - Policy engine tests (positive + all negative cases)

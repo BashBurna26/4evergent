@@ -14,8 +14,11 @@
     "dev": "pnpm -r --parallel dev",
     "dev:watch": "pnpm --filter @4evergent/api dev",
     "test": "pnpm -r test",
+    "test:coverage": "node scripts/test-coverage.mjs",
     "typecheck": "pnpm -r typecheck",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "check:openapi": "node scripts/check-openapi.mjs",
+    "verify": "echo '==> Build' && pnpm build && echo '==> Lint' && pnpm lint && echo '==> Typecheck' && pnpm typecheck && echo '==> Test' && pnpm test"
   },
   "devDependencies": {
     "@eslint/js": "^9.17.0",

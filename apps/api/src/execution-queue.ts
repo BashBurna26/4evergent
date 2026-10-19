@@ -17,7 +17,16 @@ export type PreCheckResult = "found" | "not_found" | "network_error";
 
 export type PreCheckFn = (txHash: string) => Promise<PreCheckResult>;
 
-export type PipelineExecutor = (record: ExecutionRecord) => Promise<ExecutionResult>;
+export interface ExecutionContext {
+  signal: AbortSignal;
+  onBeforeSubmit?: () => void | Promise<void>;
+  onSubmitted?: (txHash?: string) => void | Promise<void>;
+}
+
+export type PipelineExecutor = (
+  record: ExecutionRecord,
+  context?: ExecutionContext
+) => Promise<ExecutionResult>;
 
 export type SourceAccountProvider = () => Promise<{
   accountId: () => string;
@@ -49,6 +58,13 @@ export class ExecutionQueue {
   private retryPolicy: RetryPolicy = DEFAULT_RETRY_POLICY;
   private nowFn: () => Date = () => new Date();
   private preCheck?: PreCheckFn;
+  private inFlight = new Map<
+    string,
+    {
+      controller: AbortController;
+      phase: "running" | "submitting" | "submitted";
+    }
+  >();
 
   constructor(
     private store: ExecutionStore,
@@ -116,6 +132,7 @@ export class ExecutionQueue {
 
   /**
    * Manual retry — transitions failed/dead_letter back to queued.
+   * Cancelled executions cannot be retried.
    * Uses atomic conditional update to prevent race with worker.
    * Includes pre-check guard against ambiguous submission.
    */
@@ -165,18 +182,47 @@ export class ExecutionQueue {
   }
 
   /**
-   * Manual cancellation — transitions queued/executing to dead_letter.
+   * Manual cancellation — transitions queued/executing to cancelled.
    * Uses atomic conditional update to prevent race with worker.
+   *
+   * Supported Worker Model:
+   * - "queued": Can be safely cancelled before execution starts. An atomic
+   *   conditional update transitions it to "cancelled", ensuring no worker
+   *   can claim it.
+   * - "executing": Can ONLY be cancelled by the specific ExecutionQueue instance
+   *   currently executing it (holding the active inFlight controller). In a
+   *   multi-instance deployment or if no local in-flight entry exists,
+   *   cancellation is rejected ("invalid_state" with reason "not_in_flight")
+   *   because this instance cannot abort the remote worker's pipeline, and
+   *   marking it cancelled would falsely imply transaction submission was
+   *   prevented.
+   * - "submitting" / "submitted": Once an in-flight execution enters the
+   *   transaction submission phase, cancellation is rejected ("invalid_state"
+   *   with reason "submitting").
    */
-  async cancel(id: string): Promise<{ status: string; execution?: ExecutionRecord }> {
+  async cancel(
+    id: string
+  ): Promise<{ status: string; reason?: string; execution?: ExecutionRecord }> {
     const existing = await this.store.get(id);
     if (!existing) return { status: "not_found" };
     if (existing.status !== "queued" && existing.status !== "executing") {
       return { status: "invalid_state" };
     }
+
+    if (existing.status === "executing") {
+      const inFlightRun = this.inFlight.get(id);
+      if (!inFlightRun) {
+        return { status: "invalid_state", reason: "not_in_flight" };
+      }
+      if (inFlightRun.phase === "submitting" || inFlightRun.phase === "submitted") {
+        return { status: "invalid_state", reason: "submitting" };
+      }
+      inFlightRun.controller.abort();
+    }
+
     const now = new Date().toISOString();
     const updated = await this.store.updateIfStatus(id, existing.status, {
-      status: "dead_letter",
+      status: "cancelled",
       nextRetryAt: null,
       startedAt: null,
       completedAt: now,
@@ -206,16 +252,49 @@ export class ExecutionQueue {
     const claimed = await this.claim(record);
     if (!claimed) return false;
     this.activeCount++;
+
+    const controller = new AbortController();
+    const inFlightState: {
+      controller: AbortController;
+      phase: "running" | "submitting" | "submitted";
+    } = {
+      controller,
+      phase: "running",
+    };
+    this.inFlight.set(record.id, inFlightState);
+
+    const context: ExecutionContext = {
+      signal: controller.signal,
+      onBeforeSubmit: () => {
+        if (controller.signal.aborted) {
+          const err = new Error("Execution was cancelled");
+          err.name = "AbortError";
+          throw err;
+        }
+        inFlightState.phase = "submitting";
+      },
+      onSubmitted: (_txHash) => {
+        inFlightState.phase = "submitted";
+      },
+    };
+
     try {
-      const result = await this.runPipeline(record);
+      const result = await this.runPipeline(record, context);
+      if (controller.signal.aborted) {
+        return true;
+      }
       await this.complete(record, result);
       return true;
     } catch (err) {
+      if (controller.signal.aborted) {
+        return true;
+      }
       // Classify the error (transient vs permanent) for retry decision
       const errorClass = classifyUncaughtError(err);
       await this.fail(record, err, errorClass);
       return true;
     } finally {
+      this.inFlight.delete(record.id);
       this.activeCount--;
     }
   }
@@ -236,11 +315,11 @@ export class ExecutionQueue {
     return updated !== null;
   }
 
-  private async runPipeline(record: ExecutionRecord): Promise<ExecutionResult> {
+  private async runPipeline(record: ExecutionRecord, context?: ExecutionContext): Promise<ExecutionResult> {
     // The actual pipeline executor is injected (to avoid direct imports
     // of @4evergent/stellar). For the API server, this is
     // TransactionPipeline.execute() wrapped in a source-account provider.
-    return this.pipelineExecutor(record);
+    return this.pipelineExecutor(record, context);
   }
 
   private async complete(record: ExecutionRecord, result: ExecutionResult): Promise<void> {
@@ -256,7 +335,7 @@ export class ExecutionQueue {
       update.activityId = result.activityId;
     }
     if (result.success) {
-      await this.store.update(record.id, update as Partial<ExecutionRecord>);
+      await this.store.updateIfStatus(record.id, "executing", update as Partial<ExecutionRecord>);
     } else {
       await this.fail(record, result.error ?? new Error("Unknown error"), result.errorClass as "transient" | "permanent" | undefined, update);
     }
@@ -268,12 +347,17 @@ export class ExecutionQueue {
     errorClass?: "transient" | "permanent",
     extraUpdate?: Record<string, unknown>
   ): Promise<void> {
+    const current = await this.store.get(record.id);
+    if (!current || current.status !== "executing") {
+      return;
+    }
+
     const message = error instanceof Error ? error.message : String(error);
     const classification = errorClass ?? classifyUncaughtError(error);
     const attempt = record.attempt + 1;
 
     // Update attempt count on the record
-    await this.store.update(record.id, {
+    await this.store.updateIfStatus(record.id, "executing", {
       attempt,
       error: message,
       errorClass: classification,
@@ -297,12 +381,12 @@ export class ExecutionQueue {
     }
 
     if (shouldRetry) {
-      await this.store.update(record.id, {
+      await this.store.updateIfStatus(record.id, "executing", {
         status: "failed",
         nextRetryAt,
       });
     } else {
-      await this.store.update(record.id, {
+      await this.store.updateIfStatus(record.id, "executing", {
         status: "dead_letter",
         nextRetryAt: null,
         completedAt: new Date().toISOString(),
@@ -412,3 +496,4 @@ function shouldRetryNow(
   }
   return { shouldRetry: true, nextRetryAt: computeNextRetryAt(attempt, policy, now()) };
 }
+

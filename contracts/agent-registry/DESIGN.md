@@ -1,6 +1,17 @@
 # agent-registry — DESIGN (pre-rewrite)
 
-Scope: intent + API mapping for `src/lib.rs` as currently written. No implementation yet.
+Scope: design notes and API mapping for `src/lib.rs`.
+
+## Agent ID format
+
+Agent ids are case-sensitive and are not normalized. They must start with an
+ASCII lowercase letter or digit; subsequent bytes may be ASCII lowercase
+letters, digits, `.`, `_`, or `-` (`[a-z0-9][a-z0-9._-]*`). Uppercase letters,
+whitespace, control characters, punctuation outside that set, and non-ASCII
+bytes are rejected. The maximum is 64 UTF-8 bytes, not 64 Unicode characters.
+Since the accepted charset is ASCII, accepted ids have the same byte and
+character count. The implementation rejects uppercase rather than silently
+lowercasing, preserving an explicit one-to-one mapping between input and key.
 
 ## Events
 

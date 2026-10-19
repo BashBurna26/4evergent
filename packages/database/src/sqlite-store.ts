@@ -464,6 +464,18 @@ export class SQLiteApprovalStore implements ApprovalStore {
     return rows.map((r) => rowToApprovalRecord(r as unknown as ApprovalRow));
   }
 
+  async countByOwner(ownerId: string, status?: string): Promise<number> {
+    const row =
+      status === undefined
+        ? this.db
+            .prepare("SELECT COUNT(*) AS count FROM approvals WHERE owner_id = ?")
+            .get(ownerId)
+        : this.db
+            .prepare("SELECT COUNT(*) AS count FROM approvals WHERE owner_id = ? AND status = ?")
+            .get(ownerId, status);
+    return Number((row as unknown as { count: number | bigint }).count);
+  }
+
   async getForOwner(id: string, ownerId: string): Promise<ApprovalRecord | null> {
     const row = this.db
       .prepare("SELECT * FROM approvals WHERE id = ? AND owner_id = ?")

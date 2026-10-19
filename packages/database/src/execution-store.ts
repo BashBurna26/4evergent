@@ -77,9 +77,12 @@ export class InMemoryExecutionStore implements ExecutionStore {
     const result: Record<ExecutionStatus, number> = {
       queued: 0, executing: 0, submitted: 0,
       confirmed: 0, failed: 0, dead_letter: 0,
+      cancelled: 0,
     };
     for (const [status, count] of Object.entries(counts)) {
-      result[status as ExecutionStatus] = count;
+      if (status in result) {
+        result[status as ExecutionStatus] = count;
+      }
     }
     return result;
   }
@@ -103,6 +106,101 @@ export class InMemoryExecutionStore implements ExecutionStore {
   async delete(id: string): Promise<boolean> {
     return this.records.delete(id);
   }
+}
+
+/**
+ * Columns writable by update() / updateIfStatus().
+ *
+ * `id` is deliberately absent: the primary key is immutable, matching the
+ * InMemory store which re-pins `id` after merging a patch.
+ */
+const EXECUTION_WRITE_COLUMNS: Record<string, string> = {
+  ownerId: "owner_id",
+  agentId: "agent_id",
+  approvalId: "approval_id",
+  activityId: "activity_id",
+  intent: "intent_json",
+  status: "status",
+  policyDecision: "policy_decision_json",
+  simulationResult: "simulation_result_json",
+  txHash: "tx_hash",
+  submittedHash: "submitted_hash",
+  error: "error",
+  attempt: "attempt",
+  nextRetryAt: "next_retry_at",
+  startedAt: "started_at",
+  completedAt: "completed_at",
+  errorClass: "error_class",
+  createdAt: "created_at",
+  updatedAt: "updated_at",
+};
+
+const JSON_COLUMNS = new Set(["intent_json", "policy_decision_json", "simulation_result_json"]);
+
+/**
+ * Timestamp columns compared lexicographically by listDue().
+ *
+ * listDue() relies on `next_retry_at <= ?` being a valid time comparison, which
+ * only holds for a single canonical UTC ISO-8601 shape. Normalizing on write
+ * means a caller that passes "2026-01-01T13:00:00+01:00" cannot make a retry
+ * look due an hour early (or late) — an early retry is a duplicate submission.
+ */
+const TIMESTAMP_COLUMNS = new Set([
+  "next_retry_at",
+  "started_at",
+  "completed_at",
+  "created_at",
+  "updated_at",
+]);
+
+function toCanonicalIso(value: string | null | undefined): string | null {
+  if (value === null || value === undefined) return null;
+  const ms = Date.parse(value);
+  return Number.isNaN(ms) ? value : new Date(ms).toISOString();
+}
+
+function encodeColumnValue(column: string, value: unknown): unknown {
+  if (value === null) return null;
+  if (TIMESTAMP_COLUMNS.has(column)) return toCanonicalIso(value as string);
+  if (JSON_COLUMNS.has(column)) return JSON.stringify(value);
+  return value;
+}
+
+interface PartialUpdate {
+  /** `col = @p_col, col2 = @p_col2` */
+  sql: string;
+  params: Record<string, unknown>;
+}
+
+/**
+ * Build a partial SET clause from only the fields present in `patch`.
+ *
+ * WHY NOT read-modify-write: `update`/`updateIfStatus` used to SELECT the row,
+ * merge in JS, then write every column back. Any write that lands between the
+ * SELECT and the UPDATE (another API instance sharing the SQLite file, or the
+ * reconciler/recovery worker in the same process) is silently reverted. For the
+ * execution queue that means a retry counter, `submittedHash`, or a terminal
+ * status can be rolled back — i.e. an execution retried after maxRetries or
+ * resubmitted after it was already submitted. Writing only the caller's fields
+ * in one statement removes the window entirely.
+ *
+ * `undefined` values are skipped ("field not supplied"); explicit `null` clears.
+ */
+function buildPartialUpdate(patch: Partial<ExecutionRecord>): PartialUpdate | null {
+  const assignments: string[] = [];
+  const params: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(patch)) {
+    // hasOwnProperty guard: a `__proto__`/`constructor` key from an untrusted
+    // patch must not resolve to an inherited value and end up in the SET clause.
+    if (!Object.prototype.hasOwnProperty.call(EXECUTION_WRITE_COLUMNS, key)) continue;
+    const column = EXECUTION_WRITE_COLUMNS[key];
+    if (!column || value === undefined) continue;
+    const param = `p_${column}`;
+    assignments.push(`${column} = @${param}`);
+    params[param] = encodeColumnValue(column, value);
+  }
+  if (assignments.length === 0) return null;
+  return { sql: assignments.join(", "), params };
 }
 
 interface ExecutionRow {
@@ -205,12 +303,12 @@ export class SQLiteExecutionStore implements ExecutionStore {
         submitted_hash: record.submittedHash ?? null,
         error: record.error,
         attempt: record.attempt,
-        next_retry_at: record.nextRetryAt,
-        started_at: record.startedAt,
-        completed_at: record.completedAt,
+        next_retry_at: toCanonicalIso(record.nextRetryAt),
+        started_at: toCanonicalIso(record.startedAt),
+        completed_at: toCanonicalIso(record.completedAt),
         error_class: record.errorClass,
-        created_at: record.createdAt,
-        updated_at: record.updatedAt,
+        created_at: toCanonicalIso(record.createdAt),
+        updated_at: toCanonicalIso(record.updatedAt),
       });
   }
 
@@ -283,6 +381,7 @@ export class SQLiteExecutionStore implements ExecutionStore {
     const result: Record<ExecutionStatus, number> = {
       queued: 0, executing: 0, submitted: 0,
       confirmed: 0, failed: 0, dead_letter: 0,
+      cancelled: 0,
     };
     for (const row of rows) {
       const s = row.status as ExecutionStatus;
@@ -292,88 +391,44 @@ export class SQLiteExecutionStore implements ExecutionStore {
   }
 
   async update(id: string, patch: Partial<ExecutionRecord>): Promise<ExecutionRecord | null> {
-    const existing = await this.get(id);
-    if (!existing) return null;
-    const updated: ExecutionRecord = { ...existing, ...patch, id: existing.id };
-    this.db
-      .prepare(
-        `UPDATE executions SET
-           owner_id = @owner_id, agent_id = @agent_id, approval_id = @approval_id,
-           activity_id = @activity_id, intent_json = @intent_json, status = @status,
-           policy_decision_json = @policy_decision_json, simulation_result_json = @simulation_result_json,
-           tx_hash = @tx_hash, submitted_hash = @submitted_hash, error = @error, attempt = @attempt,
-           next_retry_at = @next_retry_at,
-           started_at = @started_at, completed_at = @completed_at, error_class = @error_class,
-           updated_at = @updated_at
-         WHERE id = @id`
-      )
-      .run({
-        id: updated.id,
-        owner_id: updated.ownerId,
-        agent_id: updated.agentId,
-        approval_id: updated.approvalId,
-        activity_id: updated.activityId,
-        intent_json: JSON.stringify(updated.intent),
-        status: updated.status,
-        policy_decision_json: updated.policyDecision ? JSON.stringify(updated.policyDecision) : null,
-        simulation_result_json: updated.simulationResult ? JSON.stringify(updated.simulationResult) : null,
-        tx_hash: updated.txHash,
-        submitted_hash: updated.submittedHash ?? null,
-        error: updated.error,
-        attempt: updated.attempt,
-        next_retry_at: updated.nextRetryAt,
-        started_at: updated.startedAt,
-        completed_at: updated.completedAt,
-        error_class: updated.errorClass,
-        updated_at: updated.updatedAt,
-      });
-    return updated;
+    const partial = buildPartialUpdate(patch);
+    // No writable fields supplied — mirror the InMemory store, which returns the
+    // record unchanged (or null when it does not exist).
+    if (!partial) return this.get(id);
+
+    const result = this.db
+      .prepare(`UPDATE executions SET ${partial.sql} WHERE id = @id`)
+      .run({ ...partial.params, id });
+    if (Number(result.changes) === 0) return null;
+
+    // Re-read so callers observe what is actually persisted, not a local merge
+    // that a concurrent writer may already have superseded.
+    return this.get(id);
   }
 
   async updateIfStatus(id: string, expectedStatus: ExecutionStatus, patch: Partial<ExecutionRecord>): Promise<ExecutionRecord | null> {
-    const existing = await this.get(id);
-    if (!existing || existing.status !== expectedStatus) return null;
-    const updated: ExecutionRecord = { ...existing, ...patch, id: existing.id };
+    const partial = buildPartialUpdate(patch);
+    if (!partial) {
+      const row = this.db
+        .prepare("SELECT * FROM executions WHERE id = ? AND status = ?")
+        .get(id, expectedStatus) as unknown as ExecutionRow | undefined;
+      return row ? rowToExecutionRecord(row) : null;
+    }
+
+    // Single-statement compare-and-swap: the status guard is evaluated by
+    // SQLite in the same statement that writes, so exactly one concurrent
+    // claimer can win and no other column is overwritten.
     const result = this.db
-      .prepare(
-        `UPDATE executions SET
-           owner_id = @owner_id, agent_id = @agent_id, approval_id = @approval_id,
-           activity_id = @activity_id, intent_json = @intent_json, status = @status,
-           policy_decision_json = @policy_decision_json, simulation_result_json = @simulation_result_json,
-           tx_hash = @tx_hash, submitted_hash = @submitted_hash, error = @error, attempt = @attempt,
-           next_retry_at = @next_retry_at,
-           started_at = @started_at, completed_at = @completed_at, error_class = @error_class,
-           updated_at = @updated_at
-         WHERE id = @id AND status = @expected_status`
-      )
-      .run({
-        id: updated.id,
-        owner_id: updated.ownerId,
-        agent_id: updated.agentId,
-        approval_id: updated.approvalId,
-        activity_id: updated.activityId,
-        intent_json: JSON.stringify(updated.intent),
-        status: updated.status,
-        policy_decision_json: updated.policyDecision ? JSON.stringify(updated.policyDecision) : null,
-        simulation_result_json: updated.simulationResult ? JSON.stringify(updated.simulationResult) : null,
-        tx_hash: updated.txHash,
-        submitted_hash: updated.submittedHash ?? null,
-        error: updated.error,
-        attempt: updated.attempt,
-        next_retry_at: updated.nextRetryAt,
-        started_at: updated.startedAt,
-        completed_at: updated.completedAt,
-        error_class: updated.errorClass,
-        updated_at: updated.updatedAt,
-        expected_status: expectedStatus,
-      } as any);
-    if (result.changes === 0) return null;
-    return updated;
+      .prepare(`UPDATE executions SET ${partial.sql} WHERE id = @id AND status = @expected_status`)
+      .run({ ...partial.params, id, expected_status: expectedStatus });
+    if (Number(result.changes) === 0) return null;
+
+    return this.get(id);
   }
 
   async delete(id: string): Promise<boolean> {
     const result = this.db.prepare("DELETE FROM executions WHERE id = ?").run(id);
-    return result.changes > 0;
+    return Number(result.changes) > 0;
   }
 
   close(): void {

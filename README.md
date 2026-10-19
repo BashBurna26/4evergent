@@ -19,6 +19,7 @@ An open-source framework for deploying AI agents that hold permissioned Stellar 
 7. [Testnet setup](#testnet-setup)
 8. [Adding a new agent capability](#adding-a-new-agent-capability)
 9. [Roadmap](#roadmap)
+10. [HTTP API reference and OpenAPI document](docs/api.md#openapi-document)
 
 ---
 
@@ -119,12 +120,11 @@ cd 4evergent
 # install (Node 22+, pnpm 10+, frozen lockfile for reproducible builds)
 pnpm install --frozen-lockfile
 
-# build all packages
-pnpm build
-
-# run tests
-pnpm test
+# run the same checks as CI (build, lint, typecheck, then tests)
+pnpm verify
 ```
+
+`pnpm verify` runs the repository checks in CI order and stops at the first failure. Dependencies must be installed first.
 
 ### Prerequisites
 
@@ -149,6 +149,7 @@ node apps/api/dist/server.js
 ```
 
 The server starts on `http://localhost:3000`. See [docs/testnet.md](docs/testnet.md) for the full Testnet workflow including funding, simulation, and live submission (`LIVE_SUBMIT=1`).
+For startup failures and connection troubleshooting, see [docs/troubleshooting.md](docs/troubleshooting.md).
 
 ### Watch the API server (edit → reload)
 
@@ -190,7 +191,7 @@ export STELLAR_HORIZON_URL=https://horizon-testnet.stellar.org
 #   curl "https://friendbot.stellar.org?addr=<PUBLIC_KEY>"
 ```
 
-The MVP is validated against the testnet Horizon API. See [docs/testnet.md](docs/testnet.md) for details.
+The MVP is validated against the testnet Horizon API. See [docs/testnet.md](docs/testnet.md) for details, and [docs/troubleshooting.md](docs/troubleshooting.md) for startup and connectivity issues.
 
 ## Adding a new agent capability
 
@@ -226,7 +227,11 @@ curl -X POST http://localhost:3000/agents/<agent-id>/schedules/<schedule-id>/res
 curl -X POST http://localhost:3000/agents/<agent-id>/schedules/<schedule-id>/disable
 ```
 
-Schedules are stored in SQLite (when `dbPath` is configured) or in-memory. The scheduler polls every 60 seconds by default. Failed schedules do not stop the scheduler.
+Schedules are stored in SQLite (when `dbPath` is configured) or in-memory. The scheduler polls every 60 seconds by default. Failed schedules do not stop the scheduler. The scheduler, execution queue and reconciliation worker intervals are configurable via `SCHEDULER_INTERVAL_MS`, `EXECUTION_QUEUE_INTERVAL_MS` (default 10s) and `RECONCILIATION_INTERVAL_MS` (default 30s); see [docs/testnet.md](docs/testnet.md#worker-intervals).
+
+### Missed runs
+
+The scheduler runs an occurrence that is due now or up to five minutes late. If a process restart leaves an occurrence more than five minutes overdue, it skips that occurrence, records the skip in the scheduler log, and advances to the next cron occurrence. If the expression is invalid or cannot produce a strictly future occurrence, the scheduler pauses it and logs why; correct the expression before resuming it. Multiple missed intervals never produce a catch-up burst. Set `SCHEDULER_MAX_LATENESS_MS` to change the grace period; the default is `300000` (five minutes). The server starts the scheduler only when `SCHEDULER_ENABLED=1`.
 
 ## Operator CLI
 

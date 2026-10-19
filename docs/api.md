@@ -29,6 +29,12 @@ supported: email+password, Google OAuth, and Stellar wallet signature.
 CSRF protection: cookie-authenticated state-changing requests must carry
 the `X-Requested-With` header. Bearer/API-key requests are unaffected.
 
+The design decisions behind this model — cookie vs token, the three providers
+and their separation from `API_KEYS` machine auth, the Stellar challenge
+binding, the single-process in-memory state, and session persistence — are
+recorded as ADRs 016–019 in [architecture.md](architecture.md). Rate limiting
+for the login endpoints is ADR-020 (Proposed).
+
 ### GET /auth/config
 
 Public. Returns which login methods the server has enabled:
@@ -117,6 +123,22 @@ bodies (noted where they differ). Unknown paths return
 `{"error":"not found"}` with `404`. Request bodies are limited to 1 MB.
 
 ---
+
+## OpenAPI document
+
+A machine-readable OpenAPI 3 description of this API lives at
+[`openapi/openapi.json`](../openapi/openapi.json). It is maintained by hand
+(not generated) and guarded by `pnpm check:openapi`
+(`scripts/check-openapi.mjs`), which parses the router chain in
+`apps/api/src/index.ts` and fails, in CI and locally, if a served route is
+missing from the document or a documented route is not served. A checker was
+chosen over a generator because the router is a hand-written `if` chain with
+no route table to generate from, and the task forbids changing source.
+
+Excluded on purpose: the nine `/auth/*` browser session routes
+(`apps/api/src/auth.ts`). They use cookie sessions and redirects rather than
+the Bearer integration surface. The document lists them under
+`x-excluded-routes`, and the check verifies that list matches `auth.ts`.
 
 ## Health
 
@@ -376,6 +398,19 @@ Delete a schedule. `200` → `{ "deleted": true }`.
 Transition schedule status (`paused` / `active` / `disabled`).
 `200` → `{ "schedule" }`.
 
+### Missed schedule runs
+
+An occurrence due now or no more than five minutes ago follows the normal
+execution path and still passes policy and approval checks. An occurrence more
+than five minutes late is logged and skipped; the scheduler advances the
+schedule to its next cron occurrence rather than replaying every missed
+interval. Configure the grace period with `SCHEDULER_MAX_LATENESS_MS` (default
+`300000` milliseconds). This single-run grace window avoids unbounded payment
+bursts after downtime while preserving near-on-time schedules. If the cron
+expression is invalid or cannot produce a strictly future occurrence during
+recovery, the scheduler pauses that schedule and logs the reason. Correct the
+expression before resuming it.
+
 ---
 
 ## Executions
@@ -396,19 +431,30 @@ Single execution (owner-scoped via `getForOwner`). Returns
 ### POST /executions/:id/retry
 
 Retry a `failed` or `dead_letter` execution. Requires the execution
-queue to be enabled.
+queue to be enabled. Cancelled executions cannot be retried.
 
 - `200` → `{ "execution", "message": "execution queued for retry" }`
-- `409` → wrong status / max retries reached / state conflict
+- `409` → wrong status (e.g. attempting to retry a `cancelled` execution) / max retries reached / state conflict
 - `404` → not found / queue not enabled
 
 ### POST /executions/:id/cancel
 
 Cancel a `queued` or `executing` execution. Requires the queue.
+Transitions the execution to the terminal `cancelled` status with `error: "cancelled by user"`.
+Cancelled executions represent intentional operator stops (a value-safety control) and
+cannot be retried via `/executions/:id/retry`. They are reported under `cancelled` in status
+summaries and are not counted as failed or dead-letter executions in overview counters.
 
-- `200` → `{ "execution", "message": "execution cancelled" }`
+- `200` → `{ "execution", "message": "execution cancelled" }` (returned execution has `status: "cancelled"`)
 - `409` → wrong status / conflict
 - `404` → not found / queue not enabled
+
+> **Migration note**: Existing historical records carrying `status: "dead_letter"` with
+> `error: "cancelled by user"` (from prior releases where manual cancellations transitioned to
+> `dead_letter`) are intentionally not silently reclassified to `cancelled`. They remain stored
+> as `dead_letter` to preserve historical record integrity. Operators inspecting historical data
+> will continue to see `dead_letter` for older cancellations. All cancellations performed going
+> forward will transition to the distinct `cancelled` terminal status.
 
 ### GET /agent-queue
 

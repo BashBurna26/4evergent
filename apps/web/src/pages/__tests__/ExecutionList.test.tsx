@@ -38,7 +38,7 @@ describe('ExecutionList component', () => {
       </MemoryRouter>
     );
 
-    expect(screen.getByText('Loading executions...')).toBeInTheDocument();
+    expect(screen.getByRole('status', { name: 'Loading executions...' })).toBeInTheDocument();
   });
 
   it('renders error state and calls onError callback when api rejects', async () => {

@@ -144,7 +144,8 @@ export type ExecutionStatus =
   | "submitted"
   | "confirmed"
   | "failed"
-  | "dead_letter";
+  | "dead_letter"
+  | "cancelled";
 
 export interface ExecutionRecord {
   id: string;
